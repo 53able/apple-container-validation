@@ -20,6 +20,8 @@ container run --rm --init --name NAME \
   --mount type=bind,source=/absolute/output,target=/evidence \
   IMAGE command arg
 container logs NAME
+container system logs --last 10m
+container image pull --platform linux/arm64 IMAGE
 container stats NAME
 container kill NAME
 container delete --force NAME

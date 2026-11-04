@@ -12,7 +12,7 @@ Apple Container 上に再現可能な技術検証環境を構築し、コンテ�
 
 ## 要件
 
-- Apple silicon Mac / macOS 26
+- Apple silicon Mac / macOS 26 以降
 - Apple Container CLI
 - Python 3.10 以上
 - 依存のある Python ハーネスでは uv、TypeScript ハーネスでは Node.js・npm・TypeScript 7・tsx・pino
@@ -25,7 +25,8 @@ skills/apple-container-validation/
 ├── references/     # コマンド・マニフェスト仕様・ケース設計・実行規約
 ├── assets/         # マニフェスト/レポートのテンプレート、agent-cli 用 Containerfile
 ├── scripts/        # validate-manifest.py, run-matrix.py
-└── tests/          # 標準ライブラリのみのユニットテスト
+├── tests/          # 標準ライブラリのみのユニットテスト
+└── evals/          # skill-creator / claude plugin eval 形式の実機評価ケース
 ```
 
 ## インストール

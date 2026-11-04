@@ -9,6 +9,8 @@
 - 検証日: `<ISO 8601>`
 - 判定済みジョブ: `<oracle-pass + oracle-fail> / <全ジョブ>`
 
+複数のrun（イメージやバージョンの比較など）をまとめる場合は、上の項目をrun別の表にし、全体の結論と結合規則（1つでも`FALSIFIED`なら反証、全runが支持のときだけ支持など）を明記する。
+
 `READY`はホストpreflightが成功し、runnerがレポートを出力したことだけを示す。実行完了や主張支持を意味せず、`READY`と`INCOMPLETE`は両立する。`COMPLETE`は全ジョブを観察してオラクル判定まで完了したことを示し、全オラクル成立を意味しない。`oracle-fail`も判定済みである。タイムアウト、基盤エラー、結果欠損は`INCOMPLETE`とする。runner起動前に停止した場合はPreflight/report dispositionへ`BLOCKED`または`NOT RUN`を書き、Execution statusは`not emitted (runner not invoked)`と記す。これは第4の`executionStatus`値ではない。
 
 ## 要約
@@ -38,6 +40,8 @@
 | Manifest SHA-256 | `<hash>` |
 | Tree hash exclusions | `<skillBundle / imageContext / mountSources>` |
 | Parallelism | `<workers>` |
+| Generation report | `<results/<run-id>/report.<generation>.md>` |
+| Generation report SHA-256 | `<summary.json.reportArtifact.sha256>` |
 | Agent CLI | `<none / Claude Code / Codex>` |
 | CLI version | `<full version>` |
 | Authentication method | `<none / subscription OAuth / ChatGPT / workspace access token>` |
@@ -84,9 +88,11 @@
 
 ## 再実行
 
+実行時のcwd: `<path>`（`results/`はこのcwdからの相対パス）
+
 ```bash
-python3 scripts/validate-manifest.py path/to/manifest.json
-python3 scripts/run-matrix.py path/to/manifest.json --run-id NEW_RUN_ID --concurrency auto
+python3 <skill-dir>/scripts/validate-manifest.py path/to/manifest.json
+python3 <skill-dir>/scripts/run-matrix.py path/to/manifest.json --run-id NEW_RUN_ID --concurrency auto
 ```
 
 ## 証跡
