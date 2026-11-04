@@ -1,0 +1,150 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1252 850" width="1252" height="850" role="img" aria-labelledby="t d" font-family="'Hiragino Sans','Noto Sans JP',sans-serif">
+<title id="t">apple-container-validation スキルのアーキテクチャ</title>
+<desc id="d">検証は5段階（仮説固定とpreflight、ケース設計、検証とスモーク、並列実行、判定と報告）で進む。各段階で読む同梱ファイルが決まっている。設計段階では manifest-spec と case-design と manifest-template から manifest.json を作り、validate-manifest.py で検証して results-smoke に試走する。run-matrix.py は validate-manifest.py を読み込み、Apple Container の container run --rm --init でジョブを並列起動して results/run-id/jobs に証跡を書く。それを summary.json と世代別 report に集約し、この2つが SHA-256 で結ばれた権威ある結果になる。利用者向けレポートは report-template から書き、世代別 report のパスと SHA-256 を引用する。Apple Container が使えなければ BLOCKED レポートで止まる。</desc>
+<defs>
+<marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#292524"/></marker>
+<marker id="ar2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#57534E"/></marker>
+</defs>
+<rect width="1252" height="850" fill="#FFFFFF"/>
+<text x="24" y="36" font-size="20" font-weight="700" fill="#1C1917">apple-container-validation のアーキテクチャ：手順・同梱ファイル・実行時成果物</text>
+<rect x="12" y="56" width="1228" height="118" rx="10" fill="#EEF2FF"/>
+<text x="24" y="78" font-size="13" font-weight="700" fill="#292524">エージェントの手順<tspan font-weight="400" fill="#57534E" font-size="12">　列ごとに1段階。左から順に進む</tspan></text>
+<rect x="12" y="186" width="1228" height="258" rx="10" fill="#F5F5F4"/>
+<text x="24" y="208" font-size="13" font-weight="700" fill="#292524">スキル同梱ファイル<tspan font-weight="400" fill="#57534E" font-size="12">　その段階で読む・実行するもの（列のそろいが「この段階で使う」を表す）</tspan></text>
+<rect x="12" y="456" width="1228" height="306" rx="10" fill="#ECFDF5"/>
+<text x="24" y="478" font-size="13" font-weight="700" fill="#292524">実行時に生まれるもの<tspan font-weight="400" fill="#57534E" font-size="12">　検証ワークスペースに作られる</tspan></text>
+<g id="p1"><rect x="24" y="88" width="196" height="74" rx="10" fill="#3730A3"/>
+<text x="36" y="110" font-size="14" font-weight="700" fill="#FFFFFF">1–2 仮説固定・事前確認</text>
+<text x="36" y="130" font-size="11.5" fill="#E0E7FF">棄却条件・オラクル・relationを</text>
+<text x="36" y="147" font-size="11.5" fill="#E0E7FF">結果を見る前に決める</text>
+</g>
+<line x1="224" y1="125" x2="272" y2="125" stroke="#292524" stroke-width="2" marker-end="url(#ar)"/>
+<g id="p2"><rect x="276" y="88" width="196" height="74" rx="10" fill="#3730A3"/>
+<text x="288" y="110" font-size="14" font-weight="700" fill="#FFFFFF">3 ケース行列を設計</text>
+<text x="288" y="130" font-size="11.5" fill="#E0E7FF">support / falsify / neutral の</text>
+<text x="288" y="147" font-size="11.5" fill="#E0E7FF">ケースを manifest に書く</text>
+</g>
+<line x1="476" y1="125" x2="524" y2="125" stroke="#292524" stroke-width="2" marker-end="url(#ar)"/>
+<g id="p3"><rect x="528" y="88" width="196" height="74" rx="10" fill="#3730A3"/>
+<text x="540" y="110" font-size="14" font-weight="700" fill="#FFFFFF">4–5 検証・スモーク</text>
+<text x="540" y="130" font-size="11.5" fill="#E0E7FF">validator が通るまで直し、</text>
+<text x="540" y="147" font-size="11.5" fill="#E0E7FF">--dry-run と小行列で試す</text>
+</g>
+<line x1="728" y1="125" x2="776" y2="125" stroke="#292524" stroke-width="2" marker-end="url(#ar)"/>
+<g id="p4"><rect x="780" y="88" width="196" height="74" rx="10" fill="#3730A3"/>
+<text x="792" y="110" font-size="14" font-weight="700" fill="#FFFFFF">6 並列実行</text>
+<text x="792" y="130" font-size="11.5" fill="#E0E7FF">run-matrix.py --run-id</text>
+<text x="792" y="147" font-size="11.5" fill="#E0E7FF">--concurrency auto</text>
+</g>
+<line x1="980" y1="125" x2="1028" y2="125" stroke="#292524" stroke-width="2" marker-end="url(#ar)"/>
+<g id="p5"><rect x="1032" y="88" width="196" height="74" rx="10" fill="#3730A3"/>
+<text x="1044" y="110" font-size="14" font-weight="700" fill="#FFFFFF">7–8 判定・報告</text>
+<text x="1044" y="130" font-size="11.5" fill="#E0E7FF">claimOutcome を読み、</text>
+<text x="1044" y="147" font-size="11.5" fill="#E0E7FF">テンプレートで報告を書く</text>
+</g>
+<g id="f_cmds"><rect x="24" y="222" width="196" height="38" rx="5" fill="#FFFFFF" stroke="#A8A29E" stroke-width="1"/>
+<text x="34" y="237" font-size="10" fill="#57534E">references/（構文が不明なとき）</text>
+<text x="34" y="253" font-size="11" font-family="Menlo,monospace" fill="#1C1917" >apple-container-commands.md</text>
+</g>
+<g id="f_spec"><rect x="276" y="222" width="196" height="38" rx="5" fill="#FFFFFF" stroke="#A8A29E" stroke-width="1"/>
+<text x="286" y="237" font-size="10" fill="#57534E">references/</text>
+<text x="286" y="253" font-size="11" font-family="Menlo,monospace" fill="#1C1917" >manifest-spec.md</text>
+</g>
+<g id="f_case"><rect x="276" y="268" width="196" height="38" rx="5" fill="#FFFFFF" stroke="#A8A29E" stroke-width="1"/>
+<text x="286" y="283" font-size="10" fill="#57534E">references/</text>
+<text x="286" y="299" font-size="11" font-family="Menlo,monospace" fill="#1C1917" >case-design.md</text>
+</g>
+<g id="f_mtpl"><rect x="276" y="314" width="196" height="38" rx="5" fill="#FFFFFF" stroke="#A8A29E" stroke-width="1"/>
+<text x="286" y="329" font-size="10" fill="#57534E">assets/</text>
+<text x="286" y="345" font-size="11" font-family="Menlo,monospace" fill="#1C1917" >manifest-template.json</text>
+</g>
+<g id="f_conv"><rect x="276" y="360" width="196" height="54" rx="5" fill="#FFFFFF" stroke="#A8A29E" stroke-width="1"/>
+<text x="286" y="375" font-size="10" fill="#57534E">references/（該当時のみ）</text>
+<text x="286" y="391" font-size="11" font-family="Menlo,monospace" fill="#1C1917" >runtime-conventions.md</text>
+<text x="286" y="407" font-size="11" font-family="Menlo,monospace" fill="#1C1917" >agent-cli-subscriptions.md</text>
+</g>
+<g id="f_validate"><rect x="528" y="222" width="196" height="38" rx="5" fill="#FFFFFF" stroke="#1C1917" stroke-width="2.2"/>
+<text x="538" y="237" font-size="10" fill="#57534E">scripts/</text>
+<text x="538" y="253" font-size="11" font-family="Menlo,monospace" fill="#1C1917" font-weight="700">validate-manifest.py</text>
+</g>
+<g id="f_ops"><rect x="528" y="268" width="196" height="38" rx="5" fill="#FFFFFF" stroke="#A8A29E" stroke-width="1"/>
+<text x="538" y="283" font-size="10" fill="#57534E">references/</text>
+<text x="538" y="299" font-size="11" font-family="Menlo,monospace" fill="#1C1917" >runner-operations.md</text>
+</g>
+<g id="f_run"><rect x="780" y="222" width="196" height="38" rx="5" fill="#FFFFFF" stroke="#1C1917" stroke-width="2.2"/>
+<text x="790" y="237" font-size="10" fill="#57534E">scripts/</text>
+<text x="790" y="253" font-size="11" font-family="Menlo,monospace" fill="#1C1917" font-weight="700">run-matrix.py</text>
+</g>
+<g id="f_results"><rect x="1032" y="222" width="196" height="38" rx="5" fill="#FFFFFF" stroke="#A8A29E" stroke-width="1"/>
+<text x="1042" y="237" font-size="10" fill="#57534E">references/</text>
+<text x="1042" y="253" font-size="11" font-family="Menlo,monospace" fill="#1C1917" >results-and-evidence.md</text>
+</g>
+<g id="f_rtpl"><rect x="1032" y="268" width="196" height="38" rx="5" fill="#FFFFFF" stroke="#A8A29E" stroke-width="1"/>
+<text x="1042" y="283" font-size="10" fill="#57534E">assets/</text>
+<text x="1042" y="299" font-size="11" font-family="Menlo,monospace" fill="#1C1917" >report-template.md</text>
+</g>
+<line x1="776" y1="252" x2="728" y2="252" stroke="#57534E" stroke-width="1.6" stroke-dasharray="5 4" marker-end="url(#ar2)"/>
+<text x="752" y="244" font-size="10.5" fill="#44403C" text-anchor="middle">読込</text>
+<g id="a_blocked"><rect x="24" y="494" width="196" height="62" rx="8" fill="#FFFFFF" stroke="#B45309" stroke-width="1.4" stroke-dasharray="6 4"/>
+<text x="34" y="514" font-size="11.5" fill="#1C1917">Apple Containerが使えない</text>
+<text x="34" y="530" font-size="11.5" fill="#1C1917">→ BLOCKED / UNVERIFIED の</text>
+<text x="34" y="546" font-size="11.5" fill="#1C1917">レポートを書いて停止</text>
+</g>
+<g id="a_manifest"><rect x="276" y="494" width="196" height="62" rx="8" fill="#FFFFFF" stroke="#059669" stroke-width="1.4"/>
+<text x="286" y="514" font-size="11" font-weight="700" font-family="Menlo,monospace" fill="#1C1917">manifest.json</text>
+<text x="286" y="530" font-size="11.5" fill="#1C1917">＋ harness/（必要なら）</text>
+</g>
+<g id="a_smoke"><rect x="528" y="494" width="196" height="62" rx="8" fill="#FFFFFF" stroke="#059669" stroke-width="1.4"/>
+<text x="538" y="514" font-size="11" font-weight="700" font-family="Menlo,monospace" fill="#1C1917">results-smoke/</text>
+<text x="538" y="530" font-size="11.5" fill="#1C1917">--dry-run と小行列の試走</text>
+</g>
+<g id="a_container"><rect x="780" y="494" width="196" height="78" rx="8" fill="#FFFFFF" stroke="#059669" stroke-width="1.4"/>
+<text x="790" y="514" font-size="11.5" font-weight="700" fill="#1C1917">Apple Container</text>
+<text x="790" y="530" font-size="11" font-family="Menlo,monospace" fill="#1C1917">container run --rm --init</text>
+<text x="790" y="546" font-size="11.5" fill="#1C1917">ジョブ×反復を並列に起動</text>
+<text x="790" y="562" font-size="11.5" fill="#1C1917">/evidence はジョブ固有</text>
+</g>
+<g id="a_jobs"><rect x="780" y="618" width="196" height="62" rx="8" fill="#FFFFFF" stroke="#059669" stroke-width="1.4"/>
+<text x="790" y="638" font-size="11" font-family="Menlo,monospace" fill="#1C1917">results/&lt;run-id&gt;/jobs/</text>
+<text x="790" y="654" font-size="11" font-family="Menlo,monospace" fill="#1C1917">result.json・attempts/&lt;n&gt;/</text>
+<text x="790" y="670" font-size="11.5" fill="#1C1917">（stdout・stderr・evidence）</text>
+</g>
+<g id="a_summary"><rect x="1032" y="618" width="196" height="62" rx="8" fill="#FFFFFF" stroke="#059669" stroke-width="3.2"/>
+<text x="1042" y="638" font-size="11" font-family="Menlo,monospace" fill="#1C1917">summary.json</text>
+<text x="1042" y="654" font-size="11" font-family="Menlo,monospace" fill="#1C1917">＋ report.&lt;gen&gt;.md</text>
+<text x="1042" y="670" font-size="11.5" fill="#1C1917">SHA-256で結ばれた権威ある結果</text>
+</g>
+<g id="a_userreport"><rect x="1032" y="714" width="196" height="50" rx="8" fill="#FFFFFF" stroke="#3730A3" stroke-width="1.6"/>
+<text x="1042" y="734" font-size="11" font-family="Menlo,monospace" fill="#1C1917">outputs/…-&lt;slug&gt;.md</text>
+<text x="1042" y="750" font-size="11.5" fill="#1C1917">利用者向けレポート</text>
+</g>
+<line x1="476" y1="525" x2="524" y2="525" stroke="#292524" stroke-width="1.8" marker-end="url(#ar)"/>
+<text x="500" y="518" font-size="10.5" fill="#292524" text-anchor="middle">試走</text>
+<line x1="728" y1="525" x2="776" y2="525" stroke="#292524" stroke-width="1.8" marker-end="url(#ar)"/>
+<text x="752" y="518" font-size="10.5" fill="#292524" text-anchor="middle">本実行</text>
+<line x1="878" y1="266" x2="878" y2="490" stroke="#292524" stroke-width="1.8" marker-end="url(#ar)"/>
+<text x="886" y="480" font-size="10.5" fill="#292524" text-anchor="start">起動</text>
+<line x1="878" y1="576" x2="878" y2="614" stroke="#292524" stroke-width="1.8" marker-end="url(#ar)"/>
+<text x="886" y="606" font-size="10.5" fill="#292524" text-anchor="start">証跡を書く</text>
+<line x1="980" y1="649" x2="1028" y2="649" stroke="#292524" stroke-width="1.8" marker-end="url(#ar)"/>
+<text x="1004" y="642" font-size="10.5" fill="#292524" text-anchor="middle">集約</text>
+<line x1="1130" y1="684" x2="1130" y2="710" stroke="#292524" stroke-width="1.8" marker-end="url(#ar)"/>
+<text x="1122" y="701" font-size="10.5" fill="#292524" text-anchor="end">パスとSHA-256を引用</text>
+<text x="24" y="782" font-size="12" font-weight="700" fill="#292524">凡例</text>
+<rect x="70" y="770" width="26" height="16" rx="3" fill="#3730A3" stroke="#3730A3" stroke-width="1"/>
+<text x="102" y="783" font-size="11.5" fill="#292524">手順</text>
+<rect x="155.0" y="770" width="26" height="16" rx="3" fill="#FFFFFF" stroke="#A8A29E" stroke-width="1"/>
+<text x="187.0" y="783" font-size="11.5" fill="#292524">文書（references / assets）</text>
+<rect x="388.4" y="770" width="26" height="16" rx="3" fill="#FFFFFF" stroke="#1C1917" stroke-width="2.2"/>
+<text x="420.4" y="783" font-size="11.5" fill="#292524">スクリプト</text>
+<rect x="507.9" y="770" width="26" height="16" rx="3" fill="#FFFFFF" stroke="#059669" stroke-width="1.4"/>
+<text x="539.9" y="783" font-size="11.5" fill="#292524">実行時の成果物</text>
+<rect x="650.4" y="770" width="26" height="16" rx="3" fill="#FFFFFF" stroke="#059669" stroke-width="3.2"/>
+<text x="682.4" y="783" font-size="11.5" fill="#292524">権威ある結果（太枠）</text>
+<rect x="827.4" y="770" width="26" height="16" rx="3" fill="#FFFFFF" stroke="#B45309" stroke-width="1.4" stroke-dasharray="6 4"/>
+<text x="859.4" y="783" font-size="11.5" fill="#292524">停止条件</text>
+<line x1="70" y1="808" x2="110" y2="808" stroke="#292524" stroke-width="1.8" marker-end="url(#ar)"/>
+<text x="118" y="812" font-size="11.5" fill="#292524">順序・データの流れ（ラベル＝内容）</text>
+<line x1="380" y1="808" x2="420" y2="808" stroke="#57534E" stroke-width="1.6" stroke-dasharray="5 4" marker-end="url(#ar2)"/>
+<text x="428" y="812" font-size="11.5" fill="#292524">依存（run-matrix.py が validate-manifest.py を読み込み、検証と秘密値処理を共用）</text>
+</svg>
