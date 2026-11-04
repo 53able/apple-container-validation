@@ -2,7 +2,6 @@
 """検証ケースをApple Containerで隔離・並列実行し、証跡を集約する。"""
 from __future__ import annotations
 
-import argparse
 import concurrent.futures
 import hashlib
 import importlib.util
@@ -34,6 +33,9 @@ extract_inherited_env_names = _VALIDATOR.extract_inherited_env_names
 reject_lone_surrogates = _VALIDATOR.reject_lone_surrogates
 CliArgumentError = _VALIDATOR.CliArgumentError
 SilentArgumentParser = _VALIDATOR.SilentArgumentParser
+# Shared with the validator so both CLIs derive secret values identically.
+inherited_values = _VALIDATOR._secret_values
+_has_symlink_component = _VALIDATOR._has_symlink_component
 
 CONTAINER_CLEANUP_TIMEOUT_SECONDS = 10.0
 
@@ -88,10 +90,17 @@ def sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
-def atomic_write_bytes(path: Path, value: bytes, *, root: Path | None = None) -> None:
-    """排他的に作った同一ディレクトリの0600一時ファイルから原子的に置換する。"""
-    publication_root = root if root is not None else path.parent
-    require_real_directory(publication_root, path.parent, "atomic write parent")
+def _publish_via_private_temporary(
+    path: Path, value: bytes, root: Path, *, exclusive: bool
+) -> None:
+    """同一ディレクトリに排他的に作った0600一時ファイルからpublishする。
+
+    exclusive=Trueはfsync後にhard linkで既存destinationを置換せずに作成し、
+    Falseはos.replaceで原子的に置換する。
+    """
+    label = "exclusive publication" if exclusive else "atomic write"
+    parent_label = "exclusive publication parent" if exclusive else "atomic write parent"
+    require_real_directory(root, path.parent, parent_label)
     file_descriptor: int | None = None
     temporary_name: str | None = None
     try:
@@ -102,15 +111,28 @@ def atomic_write_bytes(path: Path, value: bytes, *, root: Path | None = None) ->
         with os.fdopen(file_descriptor, "wb") as handle:
             file_descriptor = None
             handle.write(value)
-        require_real_file(publication_root, Path(temporary_name), "atomic write temporary file")
-        require_real_directory(publication_root, path.parent, "atomic write parent")
-        os.replace(temporary_name, path)
-        temporary_name = None  # os.replace is the commit point; nothing fallible follows it.
+            if exclusive:
+                handle.flush()
+                os.fsync(handle.fileno())
+        require_real_file(root, Path(temporary_name), f"{label} temporary file")
+        if exclusive:
+            os.link(temporary_name, path, follow_symlinks=False)
+        else:
+            require_real_directory(root, path.parent, parent_label)
+            os.replace(temporary_name, path)
+            temporary_name = None  # os.replace is the commit point; nothing fallible follows it.
     finally:
         if file_descriptor is not None:
             os.close(file_descriptor)
         if temporary_name is not None:
             Path(temporary_name).unlink(missing_ok=True)
+
+
+def atomic_write_bytes(path: Path, value: bytes, *, root: Path | None = None) -> None:
+    """排他的に作った同一ディレクトリの0600一時ファイルから原子的に置換する。"""
+    _publish_via_private_temporary(
+        path, value, root if root is not None else path.parent, exclusive=False
+    )
 
 
 def _assert_secret_free_bytes(value: bytes, inherited_names: set[str]) -> None:
@@ -141,26 +163,7 @@ def atomic_write_text(
 
 def atomic_create_bytes(path: Path, value: bytes, *, root: Path) -> None:
     """Publish a complete immutable file without replacing an existing destination."""
-    require_real_directory(root, path.parent, "exclusive publication parent")
-    fd: int | None = None
-    temporary_name: str | None = None
-    try:
-        fd, temporary_name = tempfile.mkstemp(
-            prefix=f".{path.name}.", suffix=".tmp", dir=str(path.parent)
-        )
-        os.fchmod(fd, 0o600)
-        with os.fdopen(fd, "wb") as handle:
-            fd = None
-            handle.write(value)
-            handle.flush()
-            os.fsync(handle.fileno())
-        require_real_file(root, Path(temporary_name), "exclusive publication temporary file")
-        os.link(temporary_name, path, follow_symlinks=False)
-    finally:
-        if fd is not None:
-            os.close(fd)
-        if temporary_name is not None:
-            Path(temporary_name).unlink(missing_ok=True)
+    _publish_via_private_temporary(path, value, root, exclusive=True)
 
 
 def atomic_create_text(
@@ -398,6 +401,35 @@ def _lexical_absolute(path: Path) -> Path:
     return path if path.is_absolute() else Path.cwd() / path
 
 
+def _is_control_char(char: str) -> bool:
+    return ord(char) < 32 or 0x7F <= ord(char) <= 0x9F
+
+
+def _is_excluded(path: Path, excluded: set[Path]) -> bool:
+    return any(path == item or item in path.parents for item in excluded)
+
+
+def _walk_tree_pruned(root: Path, excluded: set[Path]) -> list[Path]:
+    """sorted(root.rglob("*"))と同じ順序・同じ非追跡規則で走査し、除外subtreeには降りない。"""
+    entries: list[Path] = []
+    pending = [root]
+    while pending:
+        directory = pending.pop()
+        try:
+            with os.scandir(directory) as iterator:
+                children = list(iterator)
+        except OSError:
+            continue  # rglob also skips unreadable directories silently.
+        for child in children:
+            path = directory / child.name
+            if _is_excluded(path, excluded):
+                continue
+            entries.append(path)
+            if child.is_dir(follow_symlinks=False):
+                pending.append(path)
+    return sorted(entries)
+
+
 def tree_sha256(root: Path, exclude: set[Path] | None = None) -> str:
     """Hash a type-framed tree while skipping lexical exclusions before any resolve."""
     root = _lexical_absolute(root)
@@ -412,10 +444,7 @@ def tree_sha256(root: Path, exclude: set[Path] | None = None) -> str:
     if not root.is_dir():
         raise RuntimeError(f"hash root must be a regular file or real directory: {root}")
     digest.update(b"tree-v2\0directory\0")
-    for path in sorted(root.rglob("*")):
-        lexical = _lexical_absolute(path)
-        if any(lexical == item or item in lexical.parents for item in excluded):
-            continue
+    for path in _walk_tree_pruned(root, excluded):
         relative_path = path.relative_to(root)
         if "__pycache__" in relative_path.parts or path.name in {".DS_Store"} or path.suffix == ".pyc":
             continue
@@ -460,14 +489,11 @@ def resolve_manifest_input(base: Path, value: str, *, directory: bool, label: st
     if (
         not isinstance(value, str) or not value.strip() or relative == Path(".")
         or relative.is_absolute() or ".." in relative.parts
-        or any(ord(char) < 32 or 0x7F <= ord(char) <= 0x9F for char in value)
+        or any(_is_control_char(char) for char in value)
     ):
         raise RuntimeError(f"{label} must be a safe relative path")
-    current = base
-    for part in relative.parts:
-        current = current / part
-        if os.path.lexists(current) and current.is_symlink():
-            raise RuntimeError(f"{label} must not contain symlinks")
+    if _has_symlink_component(base, relative):
+        raise RuntimeError(f"{label} must not contain symlinks")
     target = base / relative
     try:
         target.resolve(strict=True).relative_to(base.resolve(strict=True))
@@ -489,10 +515,9 @@ def resolve_mount_input(base: Path, value: str, label: str) -> Path:
         if target.is_symlink() or not target.is_dir():
             raise RuntimeError(f"{label} must be a real directory")
         return target.resolve(strict=True)
-    target = resolve_manifest_input(base, value, directory=False, label=label) if (base / relative).is_file() else None
-    if target is not None:
-        return target
-    return resolve_manifest_input(base, value, directory=True, label=label)
+    return resolve_manifest_input(
+        base, value, directory=not (base / relative).is_file(), label=label
+    )
 
 
 def run_capture(args: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
@@ -521,27 +546,22 @@ def redact_command(args: list[str], inherited_names: set[str]) -> list[str]:
     return redacted
 
 
-def inherited_values(inherited_names: set[str]) -> list[str]:
-    return sorted(
-        {os.environ.get(name, "") for name in inherited_names if os.environ.get(name, "")},
-        key=lambda value: (-len(value), value),
-    )
-
-
-def _delete_secrets_text(text: str, secrets_to_remove: list[str]) -> str:
-    previous: str | None = None
-    while text != previous:
-        previous = text
+def _delete_secrets(data: Any, secrets_to_remove: list[Any], kind: str) -> Any:
+    """Delete exact values (str or bytes) to a fixed point, then fail closed on leftovers."""
+    empty = data[:0]
+    previous: Any = None
+    while data != previous:
+        previous = data
         for secret in secrets_to_remove:
-            text = text.replace(secret, "")
-    if any(secret in text for secret in secrets_to_remove):
-        raise RuntimeError("known inherited value remains after text sanitization")
-    return text
+            data = data.replace(secret, empty)
+    if any(secret in data for secret in secrets_to_remove):
+        raise RuntimeError(f"known inherited value remains after {kind} sanitization")
+    return data
 
 
 def redact_inherited_text(text: str, inherited_names: set[str]) -> str:
     """Delete exact inherited values to a fixed point without adding a derived label."""
-    return _delete_secrets_text(text, inherited_values(inherited_names))
+    return _delete_secrets(text, inherited_values(inherited_names), "text")
 
 
 def redact_inherited_structure(value: Any, inherited_names: set[str]) -> Any:
@@ -560,17 +580,6 @@ def redact_inherited_structure(value: Any, inherited_names: set[str]) -> Any:
     return value
 
 
-def _delete_secrets_bytes(data: bytes, secrets_to_remove: list[bytes]) -> bytes:
-    previous: bytes | None = None
-    while data != previous:
-        previous = data
-        for secret in secrets_to_remove:
-            data = data.replace(secret, b"")
-    if any(secret in data for secret in secrets_to_remove):
-        raise RuntimeError("known inherited value remains after binary sanitization")
-    return data
-
-
 def sanitize_artifacts(evidence: Path, inherited_names: set[str]) -> list[str]:
     """Remove exact inherited values and reject links/special files without following them."""
     failures: list[str] = []
@@ -587,7 +596,7 @@ def sanitize_artifacts(evidence: Path, inherited_names: set[str]) -> list[str]:
             failures.append(f"forbidden artifact type: {relative}")
             continue
         data = path.read_bytes()
-        sanitized = _delete_secrets_bytes(data, secrets_to_remove)
+        sanitized = _delete_secrets(data, secrets_to_remove, "binary")
         if sanitized != data:
             atomic_write_bytes(path, sanitized, root=evidence)
             failures.append(f"artifact contained a known inherited value and was sanitized: {relative}")
@@ -845,6 +854,219 @@ def build_container_args(
     return args, inherited
 
 
+_RESUME_RESULT_FIELDS = frozenset({
+    "jobId", "caseId", "repeat", "group", "relation", "criterionIds", "agentCli",
+    "description", "status", "command", "exitCode", "durationSeconds",
+    "attempts", "oracleFailures", "stdoutSha256", "stderrSha256",
+    "artifactSha256",
+})
+_RESUME_ATTEMPT_FIELDS = frozenset({
+    "attempt", "containerName", "command", "exitCode", "timedOut",
+    "durationSeconds", "passed", "failures", "stdoutSha256",
+    "stderrSha256", "artifactSha256",
+})
+_LOG_HASH_FIELDS = (("stdout.log", "stdoutSha256"), ("stderr.log", "stderrSha256"))
+
+
+def _job_identity(case: dict[str, Any], repeat: int) -> dict[str, Any]:
+    return {
+        "jobId": f"{case['id']}-r{repeat}",
+        "caseId": case["id"],
+        "group": case["group"],
+        "relation": case["relation"],
+        "criterionIds": case["criterionIds"],
+        "agentCli": case.get("agentCli"),
+        "repeat": repeat,
+    }
+
+
+def _job_status(infrastructure_error: bool, passed: bool, timed_out: bool) -> str:
+    if infrastructure_error:
+        return "infrastructure-error"
+    if passed:
+        return "oracle-pass"
+    return "timeout" if timed_out else "oracle-fail"
+
+
+def _infrastructure_failures(stderr: str) -> list[str]:
+    for marker in ("runner timeout cleanup timed out", "runner timeout cleanup failure"):
+        if marker in stderr:
+            return [marker]
+    return ["runner infrastructure failure"]
+
+
+def _is_valid_duration(value: Any) -> bool:
+    # `not value < 0` keeps the historical acceptance of every non-negative number.
+    return isinstance(value, (int, float)) and not isinstance(value, bool) and not value < 0
+
+
+def _attempt_container_name(run_root: Path, run_id: str, job_id: str, attempt: int) -> str:
+    return safe_name(f"acv-{run_root}-{run_id}-{job_id}-a{attempt}")
+
+
+def _verify_resume_result(
+    manifest: dict[str, Any], case: dict[str, Any], repeat: int, run_id: str,
+    run_root: Path, base: Path, job_root: Path, result_path: Path,
+) -> tuple[dict[str, Any], str, int | None, list[str], dict[str, str]]:
+    """完了済みjobの記録を証跡から再計算して照合し、(existing, status, exitCode, failures, hashes)を返す。"""
+    job_id = f"{case['id']}-r{repeat}"
+    try:
+        existing = load_json_object(result_path, root=job_root, label="resume result")
+    except RuntimeError as exc:
+        raise ResumeIntegrityError("persisted resume result is unreadable") from exc
+    if not _RESUME_RESULT_FIELDS.issubset(existing):
+        raise RuntimeError(f"resume result lacks writer provenance: {result_path}")
+    if not _is_valid_duration(existing.get("durationSeconds")):
+        raise RuntimeError(f"resume result duration is invalid: {result_path}")
+    if (
+        existing.get("jobId") != job_id
+        or existing.get("caseId") != case["id"]
+        or type(existing.get("repeat")) is not int
+        or existing.get("repeat") != repeat
+    ):
+        raise RuntimeError(f"resume result identity mismatch: {result_path}")
+    for log_name, hash_name in _LOG_HASH_FIELDS:
+        log_path = require_real_file(job_root, job_root / log_name, "resume top-level log")
+        if sha256_file(log_path) != existing.get(hash_name):
+            raise RuntimeError(f"resume log hash mismatch: {log_path}")
+    attempt_records = existing.get("attempts")
+    if not isinstance(attempt_records, list) or not attempt_records:
+        raise RuntimeError(f"resume result lacks attempt records: {result_path}")
+    max_attempts = case.get("retries", manifest["defaults"].get("retries", 0)) + 1
+    if len(attempt_records) > max_attempts:
+        raise RuntimeError(f"resume result has too many attempts: {result_path}")
+    attempts_root = require_real_directory(
+        job_root, job_root / "attempts", "resume attempts directory"
+    )
+    expected_attempt_names = {str(number) for number in range(1, len(attempt_records) + 1)}
+    if {path.name for path in attempts_root.iterdir()} != expected_attempt_names:
+        raise RuntimeError(f"resume attempt directory set is invalid: {attempts_root}")
+    for attempt_path in attempts_root.iterdir():
+        require_real_directory(attempts_root, attempt_path, "resume attempt directory")
+    passed = False
+    failures: list[str] = []
+    actual_hashes: dict[str, str] = {}
+    for expected_attempt, attempt_record in enumerate(attempt_records, start=1):
+        if (
+            not isinstance(attempt_record, dict)
+            or not _RESUME_ATTEMPT_FIELDS.issubset(attempt_record)
+            or type(attempt_record.get("attempt")) is not int
+            or attempt_record.get("attempt") != expected_attempt
+        ):
+            raise RuntimeError(f"resume attempt sequence or provenance mismatch: {result_path}")
+        if not _is_valid_duration(attempt_record.get("durationSeconds")):
+            raise RuntimeError(f"resume attempt duration is invalid: {result_path}")
+        attempt_root = require_real_directory(
+            attempts_root, attempts_root / str(expected_attempt), "resume attempt directory"
+        )
+        attempt_evidence = require_real_directory(
+            attempt_root, attempt_root / "evidence", "resume attempt evidence root"
+        )
+        expected_name = _attempt_container_name(run_root, run_id, job_id, expected_attempt)
+        if attempt_record.get("containerName") != expected_name:
+            raise RuntimeError(f"resume attempt container identity mismatch: {attempt_root}")
+        command = attempt_record.get("command")
+        if not isinstance(command, list) or not command or not all(
+            isinstance(token, str) and token for token in command
+        ):
+            raise RuntimeError(f"resume attempt command is invalid: {attempt_root}")
+        expected_args, expected_inherited = build_container_args(
+            manifest, case, expected_name, attempt_evidence, base, require_inherited=False,
+        )
+        if command != redact_command(expected_args, expected_inherited):
+            raise RuntimeError(f"resume attempt command mismatch: {attempt_root}")
+        for log_name, hash_name in _LOG_HASH_FIELDS:
+            log_path = require_real_file(attempt_root, attempt_root / log_name, "resume attempt log")
+            if sha256_file(log_path) != attempt_record.get(hash_name):
+                raise RuntimeError(f"resume attempt log hash mismatch: {log_path}")
+        actual_hashes, artifact_failures = collect_artifact_hashes(attempt_evidence)
+        if artifact_failures or actual_hashes != attempt_record.get("artifactSha256", {}):
+            raise RuntimeError(f"resume attempt artifact mismatch: {attempt_evidence}")
+        timed_out = attempt_record.get("timedOut")
+        exit_code = attempt_record.get("exitCode")
+        infrastructure_error = attempt_record.get("infrastructureError", False)
+        if not isinstance(infrastructure_error, bool) or not isinstance(timed_out, bool):
+            raise RuntimeError(f"resume attempt outcome is invalid: {result_path}")
+        if infrastructure_error:
+            if timed_out or exit_code is not None:
+                raise RuntimeError(f"resume infrastructure attempt outcome is invalid: {result_path}")
+        elif (timed_out and exit_code is not None) or (not timed_out and type(exit_code) is not int):
+            raise RuntimeError(f"resume attempt outcome is invalid: {result_path}")
+        attempt_stdout = read_resume_text(
+            attempt_root, attempt_root / "stdout.log", "resume attempt stdout"
+        )
+        attempt_stderr = read_resume_text(
+            attempt_root, attempt_root / "stderr.log", "resume attempt stderr"
+        )
+        if infrastructure_error:
+            passed, failures = False, _infrastructure_failures(attempt_stderr)
+        else:
+            passed, failures = check_oracle(
+                case, exit_code, timed_out, attempt_stdout, attempt_stderr,
+                attempt_root / "evidence",
+            )
+        failures.extend(item for item in artifact_failures if item not in failures)
+        if artifact_failures:
+            passed = False
+        if attempt_record.get("passed") is not passed or attempt_record.get("failures") != failures:
+            raise RuntimeError(f"resume attempt outcome mismatch: {attempt_root}")
+        if expected_attempt < len(attempt_records) and (not timed_out or infrastructure_error):
+            raise RuntimeError(f"resume retry sequence mismatch: {attempt_root}")
+
+    final_attempt = attempt_records[-1]
+    if final_attempt.get("timedOut") is True and len(attempt_records) != max_attempts:
+        raise RuntimeError(f"resume timeout result ended before retries were exhausted: {result_path}")
+    # passed/failures/actual_hashes hold the recomputed values of the final attempt.
+    exit_code = final_attempt["exitCode"]
+    reconstructed_status = _job_status(
+        final_attempt.get("infrastructureError", False), passed, final_attempt["timedOut"]
+    )
+    if (
+        final_attempt.get("passed") is not passed
+        or final_attempt.get("failures") != failures
+        or existing.get("stdoutSha256") != final_attempt.get("stdoutSha256")
+        or existing.get("stderrSha256") != final_attempt.get("stderrSha256")
+        or existing.get("command") != final_attempt.get("command")
+        or existing.get("status") != reconstructed_status
+        or existing.get("exitCode") != exit_code
+        or existing.get("oracleFailures") != failures
+        or existing.get("artifactSha256") != actual_hashes
+    ):
+        raise RuntimeError(f"resume result outcome mismatch: {result_path}")
+    return existing, reconstructed_status, exit_code, failures, actual_hashes
+
+
+def _invoke_container(
+    args: list[str], name: str, timeout: Any, known_inherited: set[str]
+) -> tuple[int | None, str, str, bool, bool]:
+    """1 attemptを実行し、(exitCode, stdout, stderr, timedOut, infrastructureError)を返す。"""
+    try:
+        completed = run_capture(args, timeout=timeout)
+        return completed.returncode, completed.stdout, completed.stderr, False, False
+    except subprocess.TimeoutExpired as exc:
+        raw_stdout = exc.stdout if isinstance(exc.stdout, str) else (exc.stdout or b"").decode("utf-8", "replace")
+        raw_stderr = exc.stderr if isinstance(exc.stderr, str) else (exc.stderr or b"").decode("utf-8", "replace")
+        try:
+            cleanup = subprocess.run(
+                ["container", "delete", "--force", name],
+                text=True, capture_output=True, check=False,
+                timeout=CONTAINER_CLEANUP_TIMEOUT_SECONDS,
+            )
+            if cleanup.returncode != 0:
+                raise RuntimeError("container cleanup returned nonzero")
+        except subprocess.TimeoutExpired:
+            return None, raw_stdout, raw_stderr + "\nrunner timeout cleanup timed out", False, True
+        except Exception:
+            # Cleanup is part of this attempt. Bind the failure rather than
+            # leaving a timeout directory that no result authenticates.
+            return None, raw_stdout, raw_stderr + "\nrunner timeout cleanup failure", False, True
+        return None, raw_stdout, raw_stderr, True, False
+    except Exception as exc:
+        return None, "", redact_inherited_text(
+            "runner infrastructure failure: " + str(exc), known_inherited
+        ), False, True
+
+
 def execute_job(
     manifest: dict[str, Any], case: dict[str, Any], repeat: int, run_id: str,
     run_root: Path, base: Path, dry_run: bool,
@@ -871,177 +1093,14 @@ def execute_job(
         create_or_validate_directory(job_root, evidence, "dry-run evidence directory")
     stdout_path, stderr_path = job_root / "stdout.log", job_root / "stderr.log"
     if result_path.exists() and not dry_run:
-        try:
-            existing = load_json_object(result_path, root=job_root, label="resume result")
-        except RuntimeError as exc:
-            raise ResumeIntegrityError("persisted resume result is unreadable") from exc
-        required_result_fields = {
-            "jobId", "caseId", "repeat", "group", "relation", "criterionIds", "agentCli",
-            "description", "status", "command", "exitCode", "durationSeconds",
-            "attempts", "oracleFailures", "stdoutSha256", "stderrSha256",
-            "artifactSha256",
-        }
-        if not required_result_fields.issubset(existing):
-            raise RuntimeError(f"resume result lacks writer provenance: {result_path}")
-        duration = existing.get("durationSeconds")
-        if not isinstance(duration, (int, float)) or isinstance(duration, bool) or duration < 0:
-            raise RuntimeError(f"resume result duration is invalid: {result_path}")
-        if (
-            existing.get("jobId") != job_id
-            or existing.get("caseId") != case["id"]
-            or type(existing.get("repeat")) is not int
-            or existing.get("repeat") != repeat
-        ):
-            raise RuntimeError(f"resume result identity mismatch: {result_path}")
-        for log_name, hash_name in (("stdout.log", "stdoutSha256"), ("stderr.log", "stderrSha256")):
-            log_path = require_real_file(job_root, job_root / log_name, "resume top-level log")
-            if sha256_file(log_path) != existing.get(hash_name):
-                raise RuntimeError(f"resume log hash mismatch: {log_path}")
-        attempt_records = existing.get("attempts")
-        if not isinstance(attempt_records, list) or not attempt_records:
-            raise RuntimeError(f"resume result lacks attempt records: {result_path}")
-        max_attempts = case.get("retries", manifest["defaults"].get("retries", 0)) + 1
-        if len(attempt_records) > max_attempts:
-            raise RuntimeError(f"resume result has too many attempts: {result_path}")
-        attempts_root = require_real_directory(
-            job_root, job_root / "attempts", "resume attempts directory"
+        existing, status, exit_code, failures, artifact_hashes = _verify_resume_result(
+            manifest, case, repeat, run_id, run_root, base, job_root, result_path
         )
-        expected_attempt_names = {str(number) for number in range(1, len(attempt_records) + 1)}
-        if {path.name for path in attempts_root.iterdir()} != expected_attempt_names:
-            raise RuntimeError(f"resume attempt directory set is invalid: {attempts_root}")
-        for attempt_path in attempts_root.iterdir():
-            require_real_directory(attempts_root, attempt_path, "resume attempt directory")
-        recomputed_attempts: list[tuple[bool, list[str], dict[str, str]]] = []
-        for expected_attempt, attempt_record in enumerate(attempt_records, start=1):
-            required_attempt_fields = {
-                "attempt", "containerName", "command", "exitCode", "timedOut",
-                "durationSeconds", "passed", "failures", "stdoutSha256",
-                "stderrSha256", "artifactSha256",
-            }
-            if (
-                not isinstance(attempt_record, dict)
-                or not required_attempt_fields.issubset(attempt_record)
-                or type(attempt_record.get("attempt")) is not int
-                or attempt_record.get("attempt") != expected_attempt
-            ):
-                raise RuntimeError(f"resume attempt sequence or provenance mismatch: {result_path}")
-            duration = attempt_record.get("durationSeconds")
-            if not isinstance(duration, (int, float)) or isinstance(duration, bool) or duration < 0:
-                raise RuntimeError(f"resume attempt duration is invalid: {result_path}")
-            attempt_root = require_real_directory(
-                attempts_root,
-                attempts_root / str(expected_attempt),
-                "resume attempt directory",
-            )
-            attempt_evidence = require_real_directory(
-                attempt_root, attempt_root / "evidence", "resume attempt evidence root"
-            )
-            expected_name = safe_name(f"acv-{run_root}-{run_id}-{job_id}-a{expected_attempt}")
-            container_name = attempt_record.get("containerName")
-            command = attempt_record.get("command")
-            if container_name != expected_name:
-                raise RuntimeError(f"resume attempt container identity mismatch: {attempt_root}")
-            if not isinstance(command, list) or not command or not all(
-                isinstance(token, str) and token for token in command
-            ):
-                raise RuntimeError(f"resume attempt command is invalid: {attempt_root}")
-            expected_args, expected_inherited = build_container_args(
-                manifest,
-                case,
-                expected_name,
-                attempt_evidence,
-                base,
-                require_inherited=False,
-            )
-            if command != redact_command(expected_args, expected_inherited):
-                raise RuntimeError(f"resume attempt command mismatch: {attempt_root}")
-            for log_name, hash_name in (("stdout.log", "stdoutSha256"), ("stderr.log", "stderrSha256")):
-                log_path = require_real_file(
-                    attempt_root, attempt_root / log_name, "resume attempt log"
-                )
-                if sha256_file(log_path) != attempt_record.get(hash_name):
-                    raise RuntimeError(f"resume attempt log hash mismatch: {log_path}")
-            actual_hashes, artifact_failures = collect_artifact_hashes(attempt_evidence)
-            if artifact_failures or actual_hashes != attempt_record.get("artifactSha256", {}):
-                raise RuntimeError(f"resume attempt artifact mismatch: {attempt_evidence}")
-            timed_out = attempt_record.get("timedOut")
-            exit_code = attempt_record.get("exitCode")
-            infrastructure_error = attempt_record.get("infrastructureError", False)
-            if not isinstance(infrastructure_error, bool) or not isinstance(timed_out, bool):
-                raise RuntimeError(f"resume attempt outcome is invalid: {result_path}")
-            if infrastructure_error:
-                if timed_out or exit_code is not None:
-                    raise RuntimeError(f"resume infrastructure attempt outcome is invalid: {result_path}")
-            elif (timed_out and exit_code is not None) or (not timed_out and type(exit_code) is not int):
-                raise RuntimeError(f"resume attempt outcome is invalid: {result_path}")
-            attempt_stdout = read_resume_text(
-                attempt_root, attempt_root / "stdout.log", "resume attempt stdout"
-            )
-            attempt_stderr = read_resume_text(
-                attempt_root, attempt_root / "stderr.log", "resume attempt stderr"
-            )
-            if infrastructure_error:
-                passed, failures = False, [
-                    "runner timeout cleanup timed out"
-                    if "runner timeout cleanup timed out" in attempt_stderr
-                    else "runner timeout cleanup failure"
-                    if "runner timeout cleanup failure" in attempt_stderr
-                    else "runner infrastructure failure"
-                ]
-            else:
-                passed, failures = check_oracle(
-                    case,
-                    exit_code,
-                    timed_out,
-                    attempt_stdout,
-                    attempt_stderr,
-                    attempt_root / "evidence",
-                )
-            failures.extend(item for item in artifact_failures if item not in failures)
-            if artifact_failures:
-                passed = False
-            if attempt_record.get("passed") is not passed or attempt_record.get("failures") != failures:
-                raise RuntimeError(f"resume attempt outcome mismatch: {attempt_root}")
-            if expected_attempt < len(attempt_records) and (not timed_out or infrastructure_error):
-                raise RuntimeError(f"resume retry sequence mismatch: {attempt_root}")
-            recomputed_attempts.append((passed, failures, actual_hashes))
-
-        final_attempt = attempt_records[-1]
-        if final_attempt.get("timedOut") is True and len(attempt_records) != max_attempts:
-            raise RuntimeError(f"resume timeout result ended before retries were exhausted: {result_path}")
-        passed, failures, artifact_hashes = recomputed_attempts[-1]
-        timed_out = final_attempt["timedOut"]
-        exit_code = final_attempt["exitCode"]
-        reconstructed_status = (
-            "infrastructure-error" if final_attempt.get("infrastructureError", False)
-            else "oracle-pass" if passed
-            else "timeout" if timed_out
-            else "oracle-fail"
-        )
-        if (
-            final_attempt.get("passed") is not passed
-            or final_attempt.get("failures") != failures
-            or existing.get("stdoutSha256") != final_attempt.get("stdoutSha256")
-            or existing.get("stderrSha256") != final_attempt.get("stderrSha256")
-            or existing.get("command") != final_attempt.get("command")
-            or existing.get("status") != reconstructed_status
-            or existing.get("exitCode") != exit_code
-            or existing.get("oracleFailures") != failures
-            or existing.get("artifactSha256") != artifact_hashes
-        ):
-            raise RuntimeError(f"resume result outcome mismatch: {result_path}")
-
         rebound = {
             **existing,
-            "jobId": job_id,
-            "caseId": case["id"],
-            "group": case["group"],
-            "relation": case["relation"],
-            "criterionIds": case["criterionIds"],
-            "agentCli": case.get("agentCli"),
-            "repeat": repeat,
+            **_job_identity(case, repeat),
             "description": case["description"],
-            "status": reconstructed_status,
+            "status": status,
             "exitCode": exit_code,
             "oracleFailures": failures,
             "artifactSha256": artifact_hashes,
@@ -1053,18 +1112,11 @@ def execute_job(
         return rebound
     name = safe_name(f"acv-{run_root}-{run_id}-{job_id}")
     args, inherited = build_container_args(manifest, case, name, evidence, base)
-    redacted = redact_command(args, inherited)
     if dry_run:
         result = {
-            "jobId": job_id,
-            "caseId": case["id"],
-            "group": case["group"],
-            "relation": case["relation"],
-            "criterionIds": case["criterionIds"],
-            "agentCli": case.get("agentCli"),
-            "repeat": repeat,
+            **_job_identity(case, repeat),
             "status": "dry-run",
-            "command": redacted,
+            "command": redact_command(args, inherited),
         }
         atomic_write_json(
             result_path, result, root=job_root, inherited_names=known_inherited
@@ -1091,54 +1143,15 @@ def execute_job(
         attempt_evidence = create_or_validate_directory(
             attempt_root, attempt_root / "evidence", "attempt evidence directory"
         )
-        attempt_name = safe_name(f"acv-{run_root}-{run_id}-{job_id}-a{attempt}")
+        attempt_name = _attempt_container_name(run_root, run_id, job_id, attempt)
         attempt_args, inherited = build_container_args(manifest, case, attempt_name, attempt_evidence, base)
         started = time.monotonic()
-        timed_out = False
-        infrastructure_failed = False
-        try:
-            completed = run_capture(attempt_args, timeout=timeout)
-            exit_code = completed.returncode
-            raw_stdout, raw_stderr = completed.stdout, completed.stderr
-        except subprocess.TimeoutExpired as exc:
-            timed_out = True
-            exit_code = None
-            raw_stdout = exc.stdout if isinstance(exc.stdout, str) else (exc.stdout or b"").decode("utf-8", "replace")
-            raw_stderr = exc.stderr if isinstance(exc.stderr, str) else (exc.stderr or b"").decode("utf-8", "replace")
-            try:
-                cleanup = subprocess.run(
-                    ["container", "delete", "--force", attempt_name],
-                    text=True, capture_output=True, check=False,
-                    timeout=CONTAINER_CLEANUP_TIMEOUT_SECONDS,
-                )
-                if cleanup.returncode != 0:
-                    raise RuntimeError("container cleanup returned nonzero")
-            except subprocess.TimeoutExpired:
-                timed_out = False
-                infrastructure_failed = True
-                raw_stderr += "\nrunner timeout cleanup timed out"
-            except Exception:
-                # Cleanup is part of this attempt. Bind the failure rather than
-                # leaving a timeout directory that no result authenticates.
-                timed_out = False
-                infrastructure_failed = True
-                raw_stderr += "\nrunner timeout cleanup failure"
-        except Exception as exc:
-            infrastructure_failed = True
-            exit_code = None
-            raw_stdout = ""
-            raw_stderr = redact_inherited_text(
-                "runner infrastructure failure: " + str(exc), known_inherited
-            )
+        exit_code, raw_stdout, raw_stderr, timed_out, infrastructure_failed = _invoke_container(
+            attempt_args, attempt_name, timeout, known_inherited
+        )
         secret_artifact_failures = sanitize_artifacts(attempt_evidence, known_inherited)
         if infrastructure_failed:
-            passed, raw_failures = False, [
-                "runner timeout cleanup timed out"
-                if "runner timeout cleanup timed out" in raw_stderr
-                else "runner timeout cleanup failure"
-                if "runner timeout cleanup failure" in raw_stderr
-                else "runner infrastructure failure"
-            ]
+            passed, raw_failures = False, _infrastructure_failures(raw_stderr)
         else:
             passed, raw_failures = check_oracle(
                 case, exit_code, timed_out, raw_stdout, raw_stderr, attempt_evidence
@@ -1165,11 +1178,10 @@ def execute_job(
                 redact_inherited_text(item, known_inherited) for item in artifact_failures
             )
             passed = False
-        attempt_redacted = redact_command(attempt_args, inherited)
         attempts.append({
             "attempt": attempt,
             "containerName": attempt_name,
-            "command": attempt_redacted,
+            "command": redact_command(attempt_args, inherited),
             "exitCode": exit_code,
             "timedOut": timed_out,
             "infrastructureError": infrastructure_failed,
@@ -1190,6 +1202,7 @@ def execute_job(
     atomic_write_text(
         stderr_path, final_stderr, root=job_root, inherited_names=known_inherited
     )
+    # Deliberate re-scan of the final evidence immediately before binding the job result.
     artifact_hashes, final_artifact_failures = collect_artifact_hashes(evidence)
     if final_artifact_failures:
         for item in final_artifact_failures:
@@ -1198,18 +1211,9 @@ def execute_job(
                 failures.append(redacted_failure)
         passed = False
     result = {
-        "jobId": job_id,
-        "caseId": case["id"],
-        "group": case["group"],
-        "relation": case["relation"],
-        "criterionIds": case["criterionIds"],
-        "agentCli": case.get("agentCli"),
-        "repeat": repeat,
-        "status": (
-            "infrastructure-error" if attempts[-1].get("infrastructureError")
-            else "oracle-pass" if passed
-            else "timeout" if final_timeout
-            else "oracle-fail"
+        **_job_identity(case, repeat),
+        "status": _job_status(
+            bool(attempts[-1].get("infrastructureError")), passed, final_timeout
         ),
         "description": case["description"],
         "command": attempts[-1]["command"],
@@ -1231,7 +1235,7 @@ def _markdown_inert(value: Any) -> str:
     """Return single-line text whose dynamic ASCII punctuation is parser-inert."""
     normalized = " ".join(
         "".join(
-            " " if ord(char) < 32 or 0x7F <= ord(char) <= 0x9F else char
+            " " if _is_control_char(char) else char
             for char in str(value)
         ).split()
     )
@@ -1243,18 +1247,6 @@ def _markdown_inert(value: Any) -> str:
         else char
         for char in normalized
     )
-
-
-def markdown_inline(value: Any) -> str:
-    return _markdown_inert(value)
-
-
-def markdown_code(value: Any) -> str:
-    return _markdown_inert(value)
-
-
-def markdown_cell(value: Any) -> str:
-    return _markdown_inert(value)
 
 
 def render_report(
@@ -1278,7 +1270,7 @@ def render_report(
             result.get("status", "other/unadjudicated"), result.get("durationSeconds", 0),
             failures or "—",
         ]
-        rows.append("| " + " | ".join(markdown_cell(cell) for cell in cells) + " |")
+        rows.append("| " + " | ".join(_markdown_inert(cell) for cell in cells) + " |")
     evidence_entries = ["run-manifest.json", "image-inspect.json", "summary.json", report_name]
     if (run_root / "image-build.log").is_file():
         evidence_entries.append("image-build.log")
@@ -1287,16 +1279,16 @@ def render_report(
         for path in sorted(jobs_root.rglob("*")):
             if path.is_file() and not path.is_symlink():
                 evidence_entries.append(str(path.relative_to(run_root)))
-    evidence_lines = "\n".join(f"- `{markdown_code(entry)}`" for entry in evidence_entries)
-    report = f"""# Apple Container検証レポート: {markdown_inline(manifest['claim'])}
+    evidence_lines = "\n".join(f"- `{_markdown_inert(entry)}`" for entry in evidence_entries)
+    report = f"""# Apple Container検証レポート: {_markdown_inert(manifest['claim'])}
 
 ## ステータス
 
 - Preflight/report disposition: **READY**
 - Disposition note: host preflight passed and the runner emitted this report; READY does not mean execution completed or the claim was supported.
-- Run ID: `{markdown_inline(summary['runId'])}`
-- Claim outcome: **{markdown_inline(summary['claimOutcome'])}**
-- Execution status: **{markdown_inline(summary['executionStatus'])}**
+- Run ID: `{_markdown_inert(summary['runId'])}`
+- Claim outcome: **{_markdown_inert(summary['claimOutcome'])}**
+- Execution status: **{_markdown_inert(summary['executionStatus'])}**
 - 判定済みジョブ: {summary['counts'].get('oracle-pass', 0) + summary['counts'].get('oracle-fail', 0)} / {summary['jobs']}
 - オラクル成立: {summary['counts'].get('oracle-pass', 0)}
 - オラクル不成立: {summary['counts'].get('oracle-fail', 0)}
@@ -1307,30 +1299,30 @@ def render_report(
 
 ## 仮説
 
-{markdown_inline(manifest['hypothesis'])}
+{_markdown_inert(manifest['hypothesis'])}
 
 ### 棄却条件
 
 """ + "\n".join(
-        f"- `{markdown_inline(item['id'])}`: {markdown_inline(item['description'])}"
+        f"- `{_markdown_inert(item['id'])}`: {_markdown_inert(item['description'])}"
         for item in manifest["falsificationCriteria"]
     ) + f"""
 
 ## 環境と来歴
 
-- Apple Container: `{markdown_inline(summary['provenance']['containerVersion'])}`
-- Host: `{markdown_inline(summary['provenance']['host'])}`
-- Image: `{markdown_inline(manifest['image']['tag'])}`
-- Image inspect SHA-256: `{markdown_inline(summary['provenance']['imageInspectSha256'])}`
-- Manifest SHA-256: `{markdown_inline(summary['provenance']['manifestSha256'])}`
-- Tree hash exclusions: `{markdown_inline(json.dumps(summary['provenance'].get('treeHashExclusions', {}), ensure_ascii=False, sort_keys=True))}`
-- 実行開始: `{markdown_inline(summary['startedAt'])}`
-- 実行終了: `{markdown_inline(summary['completedAt'])}`
-- 並列度: {markdown_inline(summary['concurrency'])}
-- Agent CLI: `{markdown_inline(', '.join(sorted({case.get('agentCli') for case in manifest['cases'] if isinstance(case.get('agentCli'), str)})) or 'none')}`
-- Authentication verification: `{markdown_inline(summary.get('authenticationVerification', 'NOT VERIFIED BY RUNNER'))}`
-- Launcher-origin verification: `{markdown_inline(summary.get('launcherOriginVerification', 'NOT VERIFIED BY RUNNER'))}`
-- Claim evaluation qualification: `{markdown_inline(summary.get('claimEvaluationQualification', 'PROVISIONAL'))}`
+- Apple Container: `{_markdown_inert(summary['provenance']['containerVersion'])}`
+- Host: `{_markdown_inert(summary['provenance']['host'])}`
+- Image: `{_markdown_inert(manifest['image']['tag'])}`
+- Image inspect SHA-256: `{_markdown_inert(summary['provenance']['imageInspectSha256'])}`
+- Manifest SHA-256: `{_markdown_inert(summary['provenance']['manifestSha256'])}`
+- Tree hash exclusions: `{_markdown_inert(json.dumps(summary['provenance'].get('treeHashExclusions', {}), ensure_ascii=False, sort_keys=True))}`
+- 実行開始: `{_markdown_inert(summary['startedAt'])}`
+- 実行終了: `{_markdown_inert(summary['completedAt'])}`
+- 並列度: {_markdown_inert(summary['concurrency'])}
+- Agent CLI: `{_markdown_inert(', '.join(sorted({case.get('agentCli') for case in manifest['cases'] if isinstance(case.get('agentCli'), str)})) or 'none')}`
+- Authentication verification: `{_markdown_inert(summary.get('authenticationVerification', 'NOT VERIFIED BY RUNNER'))}`
+- Launcher-origin verification: `{_markdown_inert(summary.get('launcherOriginVerification', 'NOT VERIFIED BY RUNNER'))}`
+- Claim evaluation qualification: `{_markdown_inert(summary.get('claimEvaluationQualification', 'PROVISIONAL'))}`
 
 `claimOutcome`はrelation/oracle集約だが、launcher由来が検証済みでない限り暫定評価である。CIは`claimOutcome`単独を主張真偽のgateにせず、完了確認には`executionStatus`を使い、主張受理には外部または記録済みのlauncher-origin attestationを必須とする。
 
@@ -1399,7 +1391,6 @@ def publish_authoritative_summary_report(
     report_path: Path | None = None
     report_text = ""
     committed: dict[str, Any] = {}
-    summary_bytes = b""
     report_bytes = b""
     for _ in range(1024):
         generation = secrets.token_hex(16)
@@ -1416,7 +1407,7 @@ def publish_authoritative_summary_report(
             "reportArtifact": {"path": report_name, "sha256": report_hash},
         }
         # JSON punctuation may recreate a secret across fields; fail before report creation.
-        summary_bytes = safe_json_bytes(committed, names)
+        safe_json_bytes(committed, names)
         candidate = run_root / report_name
         try:
             atomic_create_bytes(candidate, report_bytes, root=run_root)
@@ -1451,18 +1442,8 @@ def publish_authoritative_summary_report(
 
 def _main(diagnostics: BufferedDiagnostics) -> int:
     argv = sys.argv[1:]
-    inherited_names: set[str] = set()
-    for token in argv:
-        if token.startswith("-"):
-            continue
-        try:
-            parsed_for_names = json.loads(Path(token).read_text(encoding="utf-8"))
-            reject_lone_surrogates(parsed_for_names)
-            inherited_names = extract_inherited_env_names(parsed_for_names)
-            break
-        except (OSError, UnicodeDecodeError, json.JSONDecodeError, ValueError):
-            continue
-    diagnostics.set_inherited_names(inherited_names)
+    # Best-effort secret names before argparse so even usage errors are redacted.
+    diagnostics.set_inherited_names(_VALIDATOR._preliminary_names(argv))
 
     parser = SilentArgumentParser(
         description="Apple Container検証行列を並列実行する", add_help=False
@@ -1483,7 +1464,7 @@ def _main(diagnostics: BufferedDiagnostics) -> int:
     def safe_print(value: Any = "", *, file: Any = None) -> None:
         diagnostics.add(value, stderr=(file is sys.stderr))
 
-    if any(ord(char) < 32 or 0x7F <= ord(char) <= 0x9F for char in str(args.manifest) + str(args.results_dir)):
+    if any(_is_control_char(char) for char in str(args.manifest) + str(args.results_dir)):
         safe_print("ERROR: manifest/results pathに制御文字は使えない", file=sys.stderr)
         return 2
     if not re.fullmatch(r"[a-zA-Z0-9][a-zA-Z0-9_.-]{0,79}", args.run_id):
@@ -1524,7 +1505,8 @@ def _main(diagnostics: BufferedDiagnostics) -> int:
     if shutil.which("container") is None:
         safe_print(redact_inherited_text("ERROR: Apple Container CLI unavailable", inherited_names), file=sys.stderr)
         return 2
-    if run_capture(["container", "--version"]).returncode != 0:
+    version_probe = run_capture(["container", "--version"])
+    if version_probe.returncode != 0:
         safe_print(redact_inherited_text("ERROR: Apple Container CLI unavailable", inherited_names), file=sys.stderr)
         return 2
     status = run_capture(["container", "system", "status"])
@@ -1561,7 +1543,10 @@ def _main(diagnostics: BufferedDiagnostics) -> int:
             safe_print(redact_inherited_text("ERROR: concurrencyは1以上", inherited_names), file=sys.stderr)
             return 2
         concurrency = min(concurrency, manifest["defaults"].get("maxConcurrency", concurrency), len(jobs))
-    if any(mount.get("readonly", True) is not True for mount in manifest.get("mounts", [])):
+    shared_writable_mount = any(
+        mount.get("readonly", True) is not True for mount in manifest.get("mounts", [])
+    )
+    if shared_writable_mount:
         concurrency = 1
         safe_print(redact_inherited_text("WARNING: shared writable mount forces concurrency=1", inherited_names), file=sys.stderr)
 
@@ -1601,9 +1586,7 @@ def _main(diagnostics: BufferedDiagnostics) -> int:
             inherited_names), file=sys.stderr)
         return 2
     base = manifest_path.parent
-    container_version = redact_inherited_text(
-        run_capture(["container", "--version"]).stdout.strip(), inherited_names
-    )
+    container_version = redact_inherited_text(version_probe.stdout.strip(), inherited_names)
     skill_root = Path(__file__).resolve().parent.parent
     try:
         manifest_hash = sha256_file(manifest_path)
@@ -1777,7 +1760,6 @@ def _main(diagnostics: BufferedDiagnostics) -> int:
             return 2
 
     results: list[dict[str, Any]] = []
-    shared_writable_mount = any(mount.get("readonly", True) is not True for mount in manifest.get("mounts", []))
     lock_groups = {case.get("exclusiveGroup") for case, _ in jobs if case.get("exclusiveGroup")}
     if shared_writable_mount:
         lock_groups.add("__shared_writable_mount__")

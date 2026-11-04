@@ -56,6 +56,25 @@ def has_control_characters(value: str) -> bool:
     return any(unicodedata.category(char) == "Cc" for char in value)
 
 
+def _is_nonempty_str(value: Any) -> bool:
+    return isinstance(value, str) and bool(value.strip())
+
+
+def _is_int_at_least(value: Any, minimum: int) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and value >= minimum
+
+
+def _is_positive_number(value: Any) -> bool:
+    # `not value <= 0` keeps the historical NaN acceptance exactly.
+    return isinstance(value, (int, float)) and not isinstance(value, bool) and not value <= 0
+
+
+def _reject_unknown_keys(errors: list[str], value: dict[str, Any], allowed: set[str], label: str) -> None:
+    unknown = set(value) - allowed
+    if unknown:
+        fail(errors, f"{label}に未知キー: {', '.join(sorted(unknown))}")
+
+
 def reject_lone_surrogates(value: Any) -> None:
     """JSONでdecodeできてもUTF-8へencodeできないlone surrogateを再帰的に拒否する。"""
     if isinstance(value, str):
@@ -123,16 +142,14 @@ def validate_manifest(path: Path) -> tuple[dict[str, Any], list[str], list[str]]
     errors: list[str] = []
     warnings: list[str] = []
 
-    unknown_root = set(manifest) - ROOT_KEYS
-    if unknown_root:
-        fail(errors, f"rootに未知キー: {', '.join(sorted(unknown_root))}")
+    _reject_unknown_keys(errors, manifest, ROOT_KEYS, "root")
     if manifest.get("version") != 1:
         fail(errors, "versionは1である必要がある")
     slug = manifest.get("slug")
     if not isinstance(slug, str) or not ID_RE.fullmatch(slug):
-        fail(errors, "slugは小文字英数字と単一ハイフンで構成する")
+        fail(errors, "slugは小文字英数字とハイフンで構成する")
     for field in ("claim", "hypothesis"):
-        if not isinstance(manifest.get(field), str) or not manifest[field].strip():
+        if not _is_nonempty_str(manifest.get(field)):
             fail(errors, f"{field}は空でない文字列にする")
     criteria = manifest.get("falsificationCriteria")
     criterion_ids: set[str] = set()
@@ -148,17 +165,15 @@ def validate_manifest(path: Path) -> tuple[dict[str, Any], list[str], list[str]]
                 fail(errors, f"falsificationCriteria[{index}].idが不正または重複")
             else:
                 criterion_ids.add(criterion_id)
-            if not isinstance(criterion.get("description"), str) or not criterion["description"].strip():
+            if not _is_nonempty_str(criterion.get("description")):
                 fail(errors, f"falsificationCriteria[{index}].descriptionを指定する")
 
     image = manifest.get("image")
     if not isinstance(image, dict):
         fail(errors, "imageはobjectにする")
     else:
-        unknown_image = set(image) - IMAGE_KEYS
-        if unknown_image:
-            fail(errors, f"imageに未知キー: {', '.join(sorted(unknown_image))}")
-        if not isinstance(image.get("tag"), str) or not image["tag"].strip():
+        _reject_unknown_keys(errors, image, IMAGE_KEYS, "image")
+        if not _is_nonempty_str(image.get("tag")):
             fail(errors, "image.tagを指定する")
         if ("context" in image) != ("file" in image):
             fail(errors, "image.contextとimage.fileは両方指定するか、両方省略する")
@@ -193,14 +208,12 @@ def validate_manifest(path: Path) -> tuple[dict[str, Any], list[str], list[str]]
     if not isinstance(defaults, dict):
         fail(errors, "defaultsはobjectにする")
         defaults = {}
-    unknown_defaults = set(defaults) - DEFAULT_KEYS
-    if unknown_defaults:
-        fail(errors, f"defaultsに未知キー: {', '.join(sorted(unknown_defaults))}")
+    _reject_unknown_keys(errors, defaults, DEFAULT_KEYS, "defaults")
     network = defaults.get("network", "none")
     if not isinstance(network, str) or not NETWORK_RE.fullmatch(network):
         fail(errors, "defaults.networkが不正")
     cpus = defaults.get("cpus", 1)
-    if not isinstance(cpus, (int, float)) or isinstance(cpus, bool) or cpus <= 0:
+    if not _is_positive_number(cpus):
         fail(errors, "defaults.cpusは正数にする")
     memory = defaults.get("memory", "2G")
     if not isinstance(memory, str) or not MEM_RE.fullmatch(memory):
@@ -208,9 +221,10 @@ def validate_manifest(path: Path) -> tuple[dict[str, Any], list[str], list[str]]
     for field in ("readOnlyRoot", "allowWritableMounts"):
         if field in defaults and not isinstance(defaults[field], bool):
             fail(errors, f"defaults.{field}はbooleanにする")
-    for field, minimum in (("timeoutSeconds", 1), ("retries", 0), ("repeats", 1), ("maxConcurrency", 1)):
-        value = defaults.get(field, {"timeoutSeconds": 120, "retries": 0, "repeats": 1, "maxConcurrency": 8}[field])
-        if not isinstance(value, int) or isinstance(value, bool) or value < minimum:
+    for field, minimum, default in (
+        ("timeoutSeconds", 1, 120), ("retries", 0, 0), ("repeats", 1, 1), ("maxConcurrency", 1, 8),
+    ):
+        if not _is_int_at_least(defaults.get(field, default), minimum):
             fail(errors, f"defaults.{field}は{minimum}以上の整数にする")
 
     mounts = manifest.get("mounts", [])
@@ -224,9 +238,7 @@ def validate_manifest(path: Path) -> tuple[dict[str, Any], list[str], list[str]]
         if not isinstance(mount, dict):
             fail(errors, f"{prefix}はobjectにする")
             continue
-        unknown_mount = set(mount) - MOUNT_KEYS
-        if unknown_mount:
-            fail(errors, f"{prefix}に未知キー: {', '.join(sorted(unknown_mount))}")
+        _reject_unknown_keys(errors, mount, MOUNT_KEYS, prefix)
         source, target = mount.get("source"), mount.get("target")
         if not isinstance(source, str) or not source.strip() or has_control_characters(source):
             fail(errors, f"{prefix}.sourceは制御文字を含まない値にする")
@@ -284,9 +296,7 @@ def validate_manifest(path: Path) -> tuple[dict[str, Any], list[str], list[str]]
         if not isinstance(case, dict):
             fail(errors, f"{prefix}はobjectにする")
             continue
-        unknown_case = set(case) - CASE_KEYS
-        if unknown_case:
-            fail(errors, f"{prefix}に未知キー: {', '.join(sorted(unknown_case))}")
+        _reject_unknown_keys(errors, case, CASE_KEYS, prefix)
         case_id = case.get("id")
         if not isinstance(case_id, str) or not ID_RE.fullmatch(case_id):
             fail(errors, f"{prefix}.idが不正")
@@ -299,7 +309,7 @@ def validate_manifest(path: Path) -> tuple[dict[str, Any], list[str], list[str]]
             fail(errors, f"{prefix}.groupが不正")
         else:
             groups.add(group)
-        if not isinstance(case.get("description"), str) or not case["description"].strip():
+        if not _is_nonempty_str(case.get("description")):
             fail(errors, f"{prefix}.descriptionを指定する")
         relation = case.get("relation")
         if not isinstance(relation, str) or relation not in RELATIONS:
@@ -326,18 +336,15 @@ def validate_manifest(path: Path) -> tuple[dict[str, Any], list[str], list[str]]
                 warnings.append(f"同一command: {previous} と {case_id}; オラクル差が意図的か確認する")
             command_fingerprints[fingerprint] = case_id
         repeats = case.get("repeats", defaults.get("repeats", 1))
-        if not isinstance(repeats, int) or isinstance(repeats, bool) or repeats < 1:
+        if not _is_int_at_least(repeats, 1):
             fail(errors, f"{prefix}.repeatsは1以上の整数にする")
         else:
             total_jobs += repeats
-        timeout = case.get("timeoutSeconds", defaults.get("timeoutSeconds", 120))
-        if not isinstance(timeout, int) or isinstance(timeout, bool) or timeout < 1:
+        if not _is_int_at_least(case.get("timeoutSeconds", defaults.get("timeoutSeconds", 120)), 1):
             fail(errors, f"{prefix}.timeoutSecondsは1以上の整数にする")
-        retries = case.get("retries", defaults.get("retries", 0))
-        if not isinstance(retries, int) or isinstance(retries, bool) or retries < 0:
+        if not _is_int_at_least(case.get("retries", defaults.get("retries", 0)), 0):
             fail(errors, f"{prefix}.retriesは0以上の整数にする")
-        case_cpus = case.get("cpus", cpus)
-        if not isinstance(case_cpus, (int, float)) or isinstance(case_cpus, bool) or case_cpus <= 0:
+        if not _is_positive_number(case.get("cpus", cpus)):
             fail(errors, f"{prefix}.cpusは正数にする")
         case_memory = case.get("memory", memory)
         if not isinstance(case_memory, str) or not MEM_RE.fullmatch(case_memory):
@@ -383,9 +390,7 @@ def validate_manifest(path: Path) -> tuple[dict[str, Any], list[str], list[str]]
         if not isinstance(oracle, dict) or not oracle:
             fail(errors, f"{prefix}.oracleを指定する")
             continue
-        unknown = set(oracle) - ALLOWED_ORACLES
-        if unknown:
-            fail(errors, f"{prefix}.oracleに未知キー: {', '.join(sorted(unknown))}")
+        _reject_unknown_keys(errors, oracle, ALLOWED_ORACLES, f"{prefix}.oracle")
         effective_predicates = int("exitCode" in oracle)
         if "exitCode" in oracle and (not isinstance(oracle["exitCode"], int) or isinstance(oracle["exitCode"], bool)):
             fail(errors, f"{prefix}.oracle.exitCodeは整数にする")
@@ -408,9 +413,7 @@ def validate_manifest(path: Path) -> tuple[dict[str, Any], list[str], list[str]]
                 if not isinstance(artifact, dict) or not isinstance(artifact.get("path"), str):
                     fail(errors, f"{aprefix}.pathを指定する")
                     continue
-                unknown_artifact = set(artifact) - ARTIFACT_KEYS
-                if unknown_artifact:
-                    fail(errors, f"{aprefix}に未知キー: {', '.join(sorted(unknown_artifact))}")
+                _reject_unknown_keys(errors, artifact, ARTIFACT_KEYS, aprefix)
                 artifact_path = Path(artifact["path"])
                 if (not artifact["path"] or artifact["path"] == "."
                         or has_control_characters(artifact["path"])
@@ -447,13 +450,7 @@ def validate_manifest(path: Path) -> tuple[dict[str, Any], list[str], list[str]]
     if uncovered_criteria:
         fail(errors, "relation=falsifyケースに接続されていないfalsificationCriteria: "
              + ", ".join(sorted(uncovered_criteria)))
-    effective_max_concurrency = defaults.get("maxConcurrency", 8)
-    if (
-        has_writable_mount
-        and isinstance(effective_max_concurrency, int)
-        and not isinstance(effective_max_concurrency, bool)
-        and effective_max_concurrency > 1
-    ):
+    if has_writable_mount and _is_int_at_least(defaults.get("maxConcurrency", 8), 2):
         warnings.append("共有書き込みmountがあるためrunnerは全ジョブを直列化する")
     if len(groups) < 3:
         warnings.append("ケース群が3未満: 正例・負例・境界/失敗系の分離を確認する")
@@ -528,13 +525,11 @@ def _emit_single_channel(
     except (RuntimeError, UnicodeEncodeError, StopIteration):
         fallback = "" if as_json else "ERROR: output encoding failed\n"
         encoded = fallback.encode("ascii")
-    stream = sys.stdout.buffer if stdout and hasattr(sys.stdout, "buffer") else (
-        sys.stderr.buffer if not stdout and hasattr(sys.stderr, "buffer") else None
-    )
-    if stream is not None:
-        stream.write(encoded)
+    stream = sys.stdout if stdout else sys.stderr
+    if hasattr(stream, "buffer"):
+        stream.buffer.write(encoded)
     else:
-        (sys.stdout if stdout else sys.stderr).write(encoded.decode("utf-8"))
+        stream.write(encoded.decode("utf-8"))
 
 
 def _preliminary_names(argv: list[str]) -> set[str]:
