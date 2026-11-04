@@ -1,0 +1,4 @@
+schema_version: "1.1"
+name: timeout-sigterm-ignoring-process
+expected_outcome: |
+  Apple Container上でSIGTERMを無視するプロセスをtimeoutで包むケースを-kなし/ありで実行する。-kなしはケースのtimeoutSecondsで打ち切られ（timeout扱い、またはそれを観察するオラクル設計）、-k 2ありは短時間で終了コード137付近で止まることを観察する。ハング系ケースが無限に止まらないようケースの制限時間を設定し、結論・限界・再実行コマンドを含むレポートを残す。

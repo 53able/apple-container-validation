@@ -1,0 +1,4 @@
+schema_version: "1.1"
+name: json-lone-surrogate-python-versions
+expected_outcome: |
+  Apple Container上でPython 3.12と3.13の両方を実際に実行し、json.loadsがlone surrogateエスケープを受理する（例外を出さない）ことを観察する。棄却条件をfalsifyケースで検査し、ランナーのsummary.jsonと一致する結論・再実行コマンド・証跡パスを含むMarkdownレポートを残す。
