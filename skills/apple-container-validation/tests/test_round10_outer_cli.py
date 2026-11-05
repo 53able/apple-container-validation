@@ -137,7 +137,7 @@ value=json.load(open({str(path)!r})); m.load_validated_manifest=lambda p:(open({
                 )
                 self.assertEqual(2, completed.returncode)
                 self.assertNotIn(secret, completed.stdout)
-                self.assertNotIn("--bogus", completed.stdout)
+                self.assertIn("unrecognized option: --bogus", completed.stdout)
                 self.assertNotIn("usage:", completed.stdout.lower())
 
 

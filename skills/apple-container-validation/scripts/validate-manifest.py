@@ -35,18 +35,89 @@ ALLOWED_ORACLES = {
 }
 
 
+VALIDATOR_USAGE = """usage: validate-manifest.py MANIFEST [--json]
+
+Apple Container検証マニフェストを検査する。
+
+positional arguments:
+  MANIFEST    検査するマニフェストJSONのパス
+
+options:
+  --json      結果をJSONでstdoutに出す
+  -h, --help  この使い方を表示して終了する"""
+
+# Exact argparse messages that may be named; anything else becomes "invalid value".
+ARGUMENT_KIND_WHITELIST = {
+    "expected one argument": "expected a value",
+    "expected a positive integer or auto": "expected a positive integer or auto",
+}
+_OPTION_NAME_RE = re.compile(r"^--[a-z][a-z0-9-]{0,31}$")
+
+
 class CliArgumentError(ValueError):
     """argparse failure that never writes argv or usage directly."""
 
+    def __init__(self, public_message: str) -> None:
+        super().__init__(public_message)
+        self.public_message = public_message
+
+
+def _help_requested(argv: list[str]) -> bool:
+    """True when -h/--help appears exactly before the first "--" separator."""
+    for token in argv:
+        if token == "--":
+            return False
+        if token in ("-h", "--help"):
+            return True
+    return False
+
+
+def _option_token_name(token: str) -> str | None:
+    name = token.split("=", 1)[0]
+    return name if _OPTION_NAME_RE.fullmatch(name) else None
+
 
 class SilentArgumentParser(argparse.ArgumentParser):
+    """Parser whose errors are rebuilt from fixed strings and parser-defined names only."""
+
     def error(self, message: str) -> None:
         raise CliArgumentError("invalid arguments")
 
     def exit(self, status: int = 0, message: str | None = None) -> None:
-        if status == 0:
-            raise CliArgumentError("help requested")
         raise CliArgumentError("invalid arguments")
+
+    def _public_name(self, action: argparse.Action) -> str:
+        return action.option_strings[0] if action.option_strings else action.dest
+
+    def parse_cli(self, argv: list[str], *, required: tuple[str, ...]) -> argparse.Namespace:
+        """Parse argv (exit_on_error=False) and raise CliArgumentError with a value-free message."""
+        try:
+            namespace, extras = self.parse_known_args(argv)
+        except argparse.ArgumentError as exc:
+            if exc.argument_name is None:
+                raise CliArgumentError("invalid arguments") from None
+            kind = ARGUMENT_KIND_WHITELIST.get(exc.message, "invalid value")
+            raise CliArgumentError(f"{exc.argument_name}: {kind}") from None
+        has_separator = "--" in argv
+        before_separator = argv[: argv.index("--")] if has_separator else argv
+        unknown = [
+            token for token in extras
+            if token.startswith("-") and token != "--" and token in before_separator
+        ]
+        if unknown:
+            name = None if has_separator else _option_token_name(unknown[0])
+            if name is None:
+                raise CliArgumentError("unrecognized option")
+            raise CliArgumentError(f"unrecognized option: {name}")
+        if extras:
+            raise CliArgumentError("unexpected positional argument")
+        for action in self._actions:
+            if action.option_strings and isinstance(getattr(namespace, action.dest, None), list):
+                raise CliArgumentError(f"{self._public_name(action)}: expected a value")
+        for action in self._actions:
+            if action.dest in required and getattr(namespace, action.dest, None) is None:
+                raise CliArgumentError(f"{self._public_name(action)}: required")
+        return namespace
 
 
 def fail(errors: list[str], message: str) -> None:
@@ -569,19 +640,22 @@ def _preliminary_names(argv: list[str]) -> set[str]:
 
 def main() -> int:
     argv = sys.argv[1:]
+    if _help_requested(argv):
+        _emit_single_channel([VALIDATOR_USAGE], set(), stdout=True, as_json=False)
+        return 0
     as_json_requested = "--json" in argv
     inherited_names = _preliminary_names(argv)
     parser = SilentArgumentParser(
-        description="Apple Container検証マニフェストを検査する", add_help=False
+        description="Apple Container検証マニフェストを検査する", add_help=False, exit_on_error=False
     )
-    parser.add_argument("manifest", type=Path)
+    parser.add_argument("manifest", type=Path, nargs="?")
     parser.add_argument("--json", action="store_true", dest="as_json")
     try:
-        args = parser.parse_args(argv)
-    except CliArgumentError:
-        result = _invalid_result("invalid arguments")
+        args = parser.parse_cli(argv, required=("manifest",))
+    except CliArgumentError as exc:
+        result = _invalid_result(exc.public_message)
         records = [json.dumps(result, ensure_ascii=False, indent=2)] if as_json_requested else [
-            "ERROR: invalid arguments"
+            "ERROR: " + exc.public_message
         ]
         _emit_single_channel(
             records, inherited_names, stdout=as_json_requested, as_json=as_json_requested

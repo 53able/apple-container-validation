@@ -2,6 +2,7 @@
 """検証ケースをApple Containerで隔離・並列実行し、証跡を集約する。"""
 from __future__ import annotations
 
+import argparse
 import concurrent.futures
 import hashlib
 import importlib.util
@@ -39,6 +40,21 @@ inherited_values = _VALIDATOR._secret_values
 _has_symlink_component = _VALIDATOR._has_symlink_component
 
 CONTAINER_CLEANUP_TIMEOUT_SECONDS = 10.0
+
+RUNNER_USAGE = """usage: run-matrix.py MANIFEST --run-id RUN_ID [--concurrency N|auto] [--dry-run] [--resume] [--results-dir DIR]
+
+Apple Container検証行列を並列実行する。
+
+positional arguments:
+  MANIFEST              検証マニフェストJSONのパス
+
+options:
+  --run-id RUN_ID       実行ID（必須。英数字で始まり英数字と_.-のみ、80文字以内）
+  --concurrency N|auto  並列度。autoまたは正の整数（既定: auto。maxConcurrencyとジョブ数で頭打ち）
+  --dry-run             コンテナを実行せず、生成コマンドとマウントを確認する
+  --resume              同じrun-idの既存結果を検証して続きから実行する（inheritEnv使用時は不可）
+  --results-dir DIR     結果の出力先（既定: カレントディレクトリのresults）
+  -h, --help            この使い方を表示して終了する"""
 
 
 class ResumeIntegrityError(RuntimeError):
@@ -1454,24 +1470,40 @@ def publish_authoritative_summary_report(
     return committed, report_path
 
 
+def _concurrency_arg(value: str) -> str | int:
+    # ArgumentTypeError (not ValueError) keeps argparse from echoing the value.
+    if value == "auto":
+        return value
+    try:
+        concurrency = int(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError("expected a positive integer or auto") from None
+    if concurrency < 1:
+        raise argparse.ArgumentTypeError("expected a positive integer or auto")
+    return concurrency
+
+
 def _main(diagnostics: BufferedDiagnostics) -> int:
     argv = sys.argv[1:]
+    if _VALIDATOR._help_requested(argv):
+        diagnostics.add(RUNNER_USAGE)
+        return 0
     # Best-effort secret names before argparse so even usage errors are redacted.
     diagnostics.set_inherited_names(_VALIDATOR._preliminary_names(argv))
 
     parser = SilentArgumentParser(
-        description="Apple Container検証行列を並列実行する", add_help=False
+        description="Apple Container検証行列を並列実行する", add_help=False, exit_on_error=False
     )
-    parser.add_argument("manifest", type=Path)
-    parser.add_argument("--run-id", required=True)
-    parser.add_argument("--concurrency", default="auto")
+    parser.add_argument("manifest", type=Path, nargs="?")
+    parser.add_argument("--run-id")
+    parser.add_argument("--concurrency", type=_concurrency_arg, default="auto")
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--results-dir", type=Path, default=Path("results"))
     try:
-        args = parser.parse_args(argv)
-    except CliArgumentError:
-        diagnostics.add("ERROR: invalid arguments", stderr=True)
+        args = parser.parse_cli(argv, required=("manifest", "run_id"))
+    except CliArgumentError as exc:
+        diagnostics.add("ERROR: " + exc.public_message, stderr=True)
         return 2
     manifest_path = args.manifest.resolve()
 
@@ -1538,14 +1570,7 @@ def _main(diagnostics: BufferedDiagnostics) -> int:
     if args.concurrency == "auto":
         concurrency = recommended_concurrency(manifest, len(jobs))
     else:
-        try:
-            concurrency = int(args.concurrency)
-        except ValueError:
-            safe_print(redact_inherited_text("ERROR: concurrencyはautoまたは正整数", inherited_names), file=sys.stderr)
-            return 2
-        if concurrency < 1:
-            safe_print(redact_inherited_text("ERROR: concurrencyは1以上", inherited_names), file=sys.stderr)
-            return 2
+        concurrency = args.concurrency
         concurrency = min(concurrency, manifest["defaults"].get("maxConcurrency", concurrency), len(jobs))
     shared_writable_mount = any(
         mount.get("readonly", True) is not True for mount in manifest.get("mounts", [])
