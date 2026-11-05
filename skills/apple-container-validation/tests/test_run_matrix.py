@@ -7,6 +7,7 @@ import json
 import contextlib
 import io
 import os
+import re
 import sys
 import tempfile
 import unittest
@@ -85,6 +86,13 @@ class EvaluateRunTests(unittest.TestCase):
         ):
             with self.subTest(results=results):
                 self.assert_evaluation(results, expected_jobs, ("INCOMPLETE", "UNVERIFIED", 1))
+        two_support_jobs = [expected("support-r2", "support"), *expected_jobs]
+        for results in (
+            [result("support-r1", "oracle-pass"), result("support-r2", "timeout"), result("neutral-r1", "oracle-pass")],
+            [result("support-r1", "oracle-pass"), result("neutral-r1", "oracle-pass")],
+        ):
+            with self.subTest(two_support_results=results):
+                self.assert_evaluation(results, two_support_jobs, ("INCOMPLETE", "UNVERIFIED", 1))
 
     def test_duplicate_missing_and_unexpected_ids_are_incomplete(self) -> None:
         expected_jobs = [expected("support-r1", "support")]
@@ -133,6 +141,16 @@ class EvaluateRunTests(unittest.TestCase):
             expected_jobs,
             ("COMPLETE", "FALSIFIED", 0),
         )
+        with self.subTest(name="partial-support-with-falsify-pass"):
+            self.assert_evaluation(
+                [
+                    result("support-r1", "oracle-pass"),
+                    result("support-r2", "oracle-fail"),
+                    result("falsify-r1", "oracle-pass"),
+                ],
+                [expected("support-r2", "support"), *expected_jobs],
+                ("COMPLETE", "FALSIFIED", 0),
+            )
 
     def test_order_independent_with_repeats(self) -> None:
         expected_jobs = [expected("support-r1", "support"), expected("support-r2", "support")]
@@ -142,7 +160,7 @@ class EvaluateRunTests(unittest.TestCase):
         self.assert_evaluation(
             [result("support-r1", "oracle-pass"), result("support-r2", "oracle-fail")],
             expected_jobs,
-            ("COMPLETE", "UNVERIFIED", 0),
+            ("COMPLETE", "PARTIALLY SUPPORTED WITHIN TESTED SCOPE", 0),
         )
 
     def test_duplicate_expected_id_is_rejected(self) -> None:
@@ -184,6 +202,7 @@ class AggregationContractTests(unittest.TestCase):
             ("complete-supported", [expected("s", "support")], [result("s", "oracle-pass")], False, "COMPLETE", "SUPPORTED WITHIN TESTED SCOPE", 0),
             ("complete-falsified", [expected("f", "falsify")], [result("f", "oracle-pass")], False, "COMPLETE", "FALSIFIED", 0),
             ("complete-unverified", [expected("s", "support")], [result("s", "oracle-fail")], False, "COMPLETE", "UNVERIFIED", 0),
+            ("complete-partial", [expected("s1", "support"), expected("s2", "support")], [result("s1", "oracle-pass"), result("s2", "oracle-fail")], False, "COMPLETE", "PARTIALLY SUPPORTED WITHIN TESTED SCOPE", 0),
             ("incomplete-falsified", [expected("f", "falsify"), expected("n", "neutral")], [result("f", "oracle-pass"), result("n", "timeout")], False, "INCOMPLETE", "FALSIFIED", 1),
             ("incomplete-unverified", [expected("s", "support")], [result("s", "infrastructure-error")], False, "INCOMPLETE", "UNVERIFIED", 1),
             ("dry-run", [expected("s", "support")], [result("s", "dry-run")], True, "DRY RUN", "UNVERIFIED", 0),
@@ -192,7 +211,7 @@ class AggregationContractTests(unittest.TestCase):
         for name, expected_jobs, results, dry_run, execution, claim, exit_code in matrix:
             with self.subTest(name=name):
                 aggregation, actual_exit = _RUNNER.aggregate_run_results(results, expected_jobs, dry_run)
-                self.assertEqual(2, aggregation["version"])
+                self.assertEqual(3, aggregation["version"])
                 self.assertEqual(execution, aggregation["executionStatus"])
                 self.assertEqual(claim, aggregation["claimOutcome"])
                 self.assertEqual(exit_code, actual_exit)
@@ -282,7 +301,7 @@ class ResumeResultTests(unittest.TestCase):
             (attempt_root / "stdout.log").write_text(stdout, encoding="utf-8")
             (attempt_root / "stderr.log").write_text(stderr, encoding="utf-8")
             attempt_name = _RUNNER.safe_name(
-                f"acv-{run_root}-{run_id}-resume-case-r1-a{attempt_number}"
+                f"acv-{run_id}-resume-case-r1-a{attempt_number}-{run_root}"
             )
             args, inherited = _RUNNER.build_container_args(
                 self.manifest(), self.case(), attempt_name, evidence, run_root
@@ -488,6 +507,40 @@ class ResumeResultTests(unittest.TestCase):
             replace.assert_called_once()
             self.assertTrue(result_path.is_file())
             self.assertEqual([], list(result_path.parent.glob(".result.json.*.tmp")))
+
+
+class ContainerNameTests(unittest.TestCase):
+    def test_container_names_start_with_run_id_and_job_id(self) -> None:
+        run_id = "Run_1.x"
+        prefix = "acv-run-1-x-job-1-"
+        root_a, root_b = Path("/tmp/root-a"), Path("/tmp/root-b")
+        for attempt in (None, 1):
+            name_a = _RUNNER._container_name(root_a, run_id, "job-1", attempt)
+            name_b = _RUNNER._container_name(root_b, run_id, "job-1", attempt)
+            self.assertTrue(name_a.startswith(prefix), name_a)
+            self.assertTrue(name_b.startswith(prefix), name_b)
+            self.assertNotEqual(name_a, name_b)
+            self.assertLessEqual(len(name_a), 63)
+
+    def test_short_ids_name_starts_with_normalized_run_id_and_job_id(self) -> None:
+        run_root = Path("/tmp/root-a")
+        for attempt in (None, 1):
+            name = _RUNNER._container_name(run_root, "R1.x", "case-r1", attempt)
+            self.assertTrue(name.startswith("acv-r1-x-case-r1-"), name)
+
+    def test_long_run_id_name_is_truncated_with_hash_suffix(self) -> None:
+        run_id = "R" + "x" * 79
+        self.assertEqual(80, len(run_id))
+        run_root = Path("/tmp/root-a")
+        for attempt in (None, 2):
+            attempt_part = "" if attempt is None else f"-a{attempt}"
+            raw = f"acv-{run_id}-job-1{attempt_part}-{run_root}"
+            normalized = re.sub(r"[^a-z0-9-]", "-", raw.lower()).strip("-")
+            expected_prefix = normalized[:50].rstrip("-")
+            name = _RUNNER._container_name(run_root, run_id, "job-1", attempt)
+            self.assertLessEqual(len(name), 63, name)
+            self.assertRegex(name, r"-[0-9a-f]{12}$")
+            self.assertEqual(expected_prefix, name[:-13], name)
 
 
 class ValidatorWarningTests(unittest.TestCase):

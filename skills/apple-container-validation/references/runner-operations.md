@@ -4,11 +4,11 @@
 
 ## 引数
 
-runnerの引数は`manifest`（位置引数）、`--run-id`（必須。英数字で始まり英数字・`_.-`のみ、80文字以内）、`--concurrency`（`auto`または正の整数。いずれも`maxConcurrency`とジョブ数で頭打ち）、`--dry-run`、`--resume`、`--results-dir`（既定は**カレントディレクトリ**の`results`。レポートに実行時のcwdを書く）だけである。validatorは`manifest`と`--json`だけを取る。どちらも引数の値を出力に反映しない設計のため、`--help`や誤った引数には`invalid arguments`とだけ返す。
+runnerの引数は`manifest`（位置引数）、`--run-id`（必須。英数字で始まり英数字・`_.-`のみ、80文字以内）、`--concurrency`（`auto`または正の整数。いずれも`maxConcurrency`とジョブ数で頭打ち）、`--dry-run`、`--resume`、`--results-dir`（既定は**カレントディレクトリ**の`results`。レポートに実行時のcwdを書く）だけである。validatorは`manifest`と`--json`だけを取る。どちらも`--help`で固定のusageを表示して終了コード0で終わる。引数の値は出力に反映しない設計のため、誤った引数には`ERROR: <option>: <種別>`（例: `--concurrency: expected a positive integer or auto`、`unrecognized option: --bogus`）だけを返し、終了コードは2になる。未知オプションの名前を表示するのは、小文字の長形式（`--`で始まる）1件だけで、引数に`--`がある場合は名前を出さない。小文字の長形式で渡した値はオプション名として表示されるので、秘密値をその形で渡さない。
 
 ## コンテナの起動条件
 
-runnerは各ジョブを`container run --rm --init --name acv-...`で起動し、`readOnlyRoot`なら`--read-only --tmpfs /tmp`を付け、ジョブ固有の`/evidence`を書き込み可能でマウントする。`--init`によりハーネスはPID 1にならず、`--rm`により正常終了したコンテナは残らない（タイムアウト時はrunnerが名前を指定して`container delete --force`する）。コンテナ名は`acv-`＋results pathの先頭＋hashで、results pathが長いとrun-idは名前に現れない。自分のジョブのコンテナ名は`result.json`の`command`で確かめる。
+runnerは各ジョブを`container run --rm --init --name acv-...`で起動し、`readOnlyRoot`なら`--read-only --tmpfs /tmp`を付け、ジョブ固有の`/evidence`を書き込み可能でマウントする。`--init`によりハーネスはPID 1にならず、`--rm`により正常終了したコンテナは残らない（タイムアウト時はrunnerが名前を指定して`container delete --force`する）。コンテナ名は`acv-<run-id>-<job-id>[-a<attempt>]-…-<hash>`の形で、run-idは小文字化され英数字とハイフン以外は`-`に置き換わる。名前は63文字で切り詰められるので、run-idが長いとjob-idが見えなくなる。正確な名前は`result.json`の`command`で確かめる。
 
 コンテナ起動にはジョブごとに10〜30秒かかることがあり、`durationSeconds`と`timeoutSeconds`はこれを含む。`timeoutSeconds`には起動分の余裕を持たせ、payload自体の時間はハーネス内で測ってartifactに書く。プロセス木、シグナル、ゾンビ回収、ファイルシステム書き込みを扱う検証では、`--init`（ハーネスはPID 1にならない）と`--read-only`の条件を仮説の前提としてレポートに書く。
 

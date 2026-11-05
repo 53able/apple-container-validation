@@ -247,7 +247,8 @@ class MainRedactionTests(unittest.TestCase):
         output = io.StringIO()
         with (
             mock.patch.object(sys, "argv", argv),
-            mock.patch.object(_RUNNER, "validate_manifest", return_value=(self.manifest(), [], [])),
+            mock.patch.object(_RUNNER, "load_validated_manifest",
+                              return_value=(self.manifest(), [], [], hashlib.sha256(b"{}").hexdigest())),
             mock.patch.object(_RUNNER.shutil, "which", return_value="/usr/bin/container"),
             mock.patch.object(_RUNNER, "run_capture", side_effect=capture),
             mock.patch.object(_RUNNER, "execute_job", side_effect=execute),

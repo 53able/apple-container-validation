@@ -98,12 +98,13 @@ class SingleChannelAndArgumentTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "manifest.json"
             path.write_text(json.dumps(manifest({"inheritEnv": ["TOKEN"]})), encoding="utf-8")
+            flag = Path(directory) / "load-validated-manifest-called"
             validator_code = f'''import importlib.util,json,os,sys
 p={str(VALIDATOR_PATH)!r}; s=importlib.util.spec_from_file_location("v",p); m=importlib.util.module_from_spec(s); s.loader.exec_module(m)
 value=json.load(open({str(path)!r})); m.validate_manifest=lambda p:(value,[],["first"]); sys.argv=[p,{str(path)!r}]; raise SystemExit(m.main())'''
             runner_code = f'''import importlib.util,json,os,sys
 p={str(RUNNER_PATH)!r}; s=importlib.util.spec_from_file_location("r",p); m=importlib.util.module_from_spec(s); s.loader.exec_module(m)
-value=json.load(open({str(path)!r})); m.validate_manifest=lambda p:(value,[],["first"]); m.shutil.which=lambda x:None; sys.argv=[p,{str(path)!r},"--run-id","run"]; raise SystemExit(m.main())'''
+value=json.load(open({str(path)!r})); m.load_validated_manifest=lambda p:(open({str(flag)!r},"w").close(),(value,[],["first"],"0"*64))[1]; m.shutil.which=lambda x:None; sys.argv=[p,{str(path)!r},"--run-id","run"]; raise SystemExit(m.main())'''
             for code, secret, expected in (
                 (validator_code, "first\nOK:", 0),
                 (runner_code, "first\nERROR: Apple", 2),
@@ -115,6 +116,9 @@ value=json.load(open({str(path)!r})); m.validate_manifest=lambda p:(value,[],["f
                 )
                 self.assertEqual(expected, completed.returncode)
                 self.assertNotIn(secret, completed.stdout)
+                if code is runner_code:
+                    self.assertTrue(flag.exists())
+                    self.assertIn("WARNING: ", completed.stdout)
 
     def test_bogus_secret_is_silent_and_shared_sink_safe(self):
         secret = "former-stdout\nERROR: former-stderr"
@@ -133,7 +137,7 @@ value=json.load(open({str(path)!r})); m.validate_manifest=lambda p:(value,[],["f
                 )
                 self.assertEqual(2, completed.returncode)
                 self.assertNotIn(secret, completed.stdout)
-                self.assertNotIn("--bogus", completed.stdout)
+                self.assertIn("unrecognized option: --bogus", completed.stdout)
                 self.assertNotIn("usage:", completed.stdout.lower())
 
 

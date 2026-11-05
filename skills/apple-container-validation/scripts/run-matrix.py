@@ -2,6 +2,7 @@
 """検証ケースをApple Containerで隔離・並列実行し、証跡を集約する。"""
 from __future__ import annotations
 
+import argparse
 import concurrent.futures
 import hashlib
 import importlib.util
@@ -29,6 +30,7 @@ _VALIDATOR = importlib.util.module_from_spec(_VALIDATOR_SPEC)
 _VALIDATOR_SPEC.loader.exec_module(_VALIDATOR)
 recommended_concurrency = _VALIDATOR.recommended_concurrency
 validate_manifest = _VALIDATOR.validate_manifest
+load_validated_manifest = _VALIDATOR.load_validated_manifest
 extract_inherited_env_names = _VALIDATOR.extract_inherited_env_names
 reject_lone_surrogates = _VALIDATOR.reject_lone_surrogates
 CliArgumentError = _VALIDATOR.CliArgumentError
@@ -38,6 +40,21 @@ inherited_values = _VALIDATOR._secret_values
 _has_symlink_component = _VALIDATOR._has_symlink_component
 
 CONTAINER_CLEANUP_TIMEOUT_SECONDS = 10.0
+
+RUNNER_USAGE = """usage: run-matrix.py MANIFEST --run-id RUN_ID [--concurrency N|auto] [--dry-run] [--resume] [--results-dir DIR]
+
+Apple Container検証行列を並列実行する。
+
+positional arguments:
+  MANIFEST              検証マニフェストJSONのパス
+
+options:
+  --run-id RUN_ID       実行ID（必須。英数字で始まり英数字と_.-のみ、80文字以内）
+  --concurrency N|auto  並列度。autoまたは正の整数（既定: auto。maxConcurrencyとジョブ数で頭打ち）
+  --dry-run             コンテナを実行せず、生成コマンドとマウントを確認する
+  --resume              同じrun-idの既存結果を検証して続きから実行する（inheritEnv使用時は不可）
+  --results-dir DIR     結果の出力先（既定: カレントディレクトリのresults）
+  -h, --help            この使い方を表示して終了する"""
 
 
 class ResumeIntegrityError(RuntimeError):
@@ -369,10 +386,11 @@ def load_json_object(path: Path, *, root: Path, label: str) -> dict[str, Any]:
     return value
 
 
-def read_resume_text(root: Path, path: Path, label: str) -> str:
+def decode_resume_text(data: bytes) -> str:
+    """ハッシュ照合済みのattemptログを改行変換なしでデコードする（新規実行時のoracle入力と揃える）。"""
     try:
-        return require_real_file(root, path, label).read_text(encoding="utf-8")
-    except (OSError, UnicodeDecodeError, RuntimeError) as exc:
+        return data.decode("utf-8")
+    except UnicodeDecodeError as exc:
         raise ResumeIntegrityError("persisted resume text is unreadable") from exc
 
 
@@ -660,6 +678,8 @@ def collect_artifact_hashes(evidence: Path) -> tuple[dict[str, str], list[str]]:
     return hashes, failures
 
 
+PARTIALLY_SUPPORTED = "PARTIALLY SUPPORTED WITHIN TESTED SCOPE"
+
 JOB_STATUS_KEYS = (
     "oracle-pass",
     "oracle-fail",
@@ -699,10 +719,26 @@ def evaluate_run(
         for job_id, candidates in results_by_id.items()
         if job_id in expected_by_id and len(candidates) == 1
     }
+    support_ids = {
+        job_id
+        for job_id, expected in expected_by_id.items()
+        if expected.get("relation") == "support"
+    }
+    falsify_ids = {
+        job_id
+        for job_id, expected in expected_by_id.items()
+        if expected.get("relation") == "falsify"
+    }
     has_unexpected_ids = bool(set(results_by_id) - set(expected_by_id))
     has_duplicate_ids = any(len(candidates) != 1 for candidates in results_by_id.values())
     evidence_integrity_clean = not (
         has_anonymous_results or has_unexpected_ids or has_duplicate_ids
+    )
+    # neutral の重複は期待 ID との対応を崩さないので、仮説評価の整合性からは外す。
+    claim_integrity_clean = not (
+        has_anonymous_results
+        or has_unexpected_ids
+        or any(len(results_by_id.get(i, [])) > 1 for i in support_ids | falsify_ids)
     )
     identities_complete = (
         evidence_integrity_clean
@@ -732,27 +768,31 @@ def evaluate_run(
     ):
         return execution_status, "FALSIFIED", exit_code
 
-    support_ids = {
-        job_id
-        for job_id, expected in expected_by_id.items()
-        if expected.get("relation") == "support"
-    }
-    falsify_ids = {
-        job_id
-        for job_id, expected in expected_by_id.items()
-        if expected.get("relation") == "falsify"
-    }
-    support_complete = bool(support_ids) and all(
-        job_id in matched and matched[job_id].get("status") == "oracle-pass"
+    support_adjudicated = all(
+        job_id in matched and matched[job_id].get("status") in adjudicated_statuses
         for job_id in support_ids
     )
     falsify_adjudicated = all(
         job_id in matched and matched[job_id].get("status") == "oracle-fail"
         for job_id in falsify_ids
     )
-    if evidence_integrity_clean and support_complete and falsify_adjudicated:
-        return execution_status, "SUPPORTED WITHIN TESTED SCOPE", exit_code
+    if not (
+        claim_integrity_clean
+        and falsify_adjudicated
+        and support_ids
+        and support_adjudicated
+    ):
+        return execution_status, "UNVERIFIED", exit_code
 
+    support_passes = sum(
+        1
+        for job_id in support_ids
+        if job_id in matched and matched[job_id].get("status") == "oracle-pass"
+    )
+    if support_passes == len(support_ids):
+        return execution_status, "SUPPORTED WITHIN TESTED SCOPE", exit_code
+    if support_passes:
+        return execution_status, PARTIALLY_SUPPORTED, exit_code
     return execution_status, "UNVERIFIED", exit_code
 
 
@@ -770,7 +810,7 @@ def aggregate_run_results(
             counts["other/unadjudicated"] += 1
     execution_status, claim_outcome, exit_code = evaluate_run(results, expected_jobs, dry_run)
     return {
-        "version": 2,
+        "version": 3,
         "executionStatus": execution_status,
         "claimOutcome": claim_outcome,
         "jobs": len(expected_jobs),
@@ -893,8 +933,9 @@ def _is_valid_duration(value: Any) -> bool:
     return isinstance(value, (int, float)) and not isinstance(value, bool) and not value < 0
 
 
-def _attempt_container_name(run_root: Path, run_id: str, job_id: str, attempt: int) -> str:
-    return safe_name(f"acv-{run_root}-{run_id}-{job_id}-a{attempt}")
+def _container_name(run_root: Path, run_id: str, job_id: str, attempt: int | None = None) -> str:
+    suffix = "" if attempt is None else f"-a{attempt}"
+    return safe_name(f"acv-{run_id}-{job_id}{suffix}-{run_root}")
 
 
 def _verify_resume_result(
@@ -955,7 +996,7 @@ def _verify_resume_result(
         attempt_evidence = require_real_directory(
             attempt_root, attempt_root / "evidence", "resume attempt evidence root"
         )
-        expected_name = _attempt_container_name(run_root, run_id, job_id, expected_attempt)
+        expected_name = _container_name(run_root, run_id, job_id, expected_attempt)
         if attempt_record.get("containerName") != expected_name:
             raise RuntimeError(f"resume attempt container identity mismatch: {attempt_root}")
         command = attempt_record.get("command")
@@ -968,10 +1009,13 @@ def _verify_resume_result(
         )
         if command != redact_command(expected_args, expected_inherited):
             raise RuntimeError(f"resume attempt command mismatch: {attempt_root}")
+        attempt_logs: dict[str, bytes] = {}
         for log_name, hash_name in _LOG_HASH_FIELDS:
             log_path = require_real_file(attempt_root, attempt_root / log_name, "resume attempt log")
-            if sha256_file(log_path) != attempt_record.get(hash_name):
+            data = log_path.read_bytes()
+            if sha256_bytes(data) != attempt_record.get(hash_name):
                 raise RuntimeError(f"resume attempt log hash mismatch: {log_path}")
+            attempt_logs[log_name] = data
         actual_hashes, artifact_failures = collect_artifact_hashes(attempt_evidence)
         if artifact_failures or actual_hashes != attempt_record.get("artifactSha256", {}):
             raise RuntimeError(f"resume attempt artifact mismatch: {attempt_evidence}")
@@ -985,12 +1029,8 @@ def _verify_resume_result(
                 raise RuntimeError(f"resume infrastructure attempt outcome is invalid: {result_path}")
         elif (timed_out and exit_code is not None) or (not timed_out and type(exit_code) is not int):
             raise RuntimeError(f"resume attempt outcome is invalid: {result_path}")
-        attempt_stdout = read_resume_text(
-            attempt_root, attempt_root / "stdout.log", "resume attempt stdout"
-        )
-        attempt_stderr = read_resume_text(
-            attempt_root, attempt_root / "stderr.log", "resume attempt stderr"
-        )
+        attempt_stdout = decode_resume_text(attempt_logs["stdout.log"])
+        attempt_stderr = decode_resume_text(attempt_logs["stderr.log"])
         if infrastructure_error:
             passed, failures = False, _infrastructure_failures(attempt_stderr)
         else:
@@ -1101,7 +1141,7 @@ def execute_job(
                 result_path, rebound, root=job_root, inherited_names=known_inherited
             )
         return rebound
-    name = safe_name(f"acv-{run_root}-{run_id}-{job_id}")
+    name = _container_name(run_root, run_id, job_id)
     args, inherited = build_container_args(manifest, case, name, evidence, base)
     if dry_run:
         result = {
@@ -1134,7 +1174,7 @@ def execute_job(
         attempt_evidence = create_or_validate_directory(
             attempt_root, attempt_root / "evidence", "attempt evidence directory"
         )
-        attempt_name = _attempt_container_name(run_root, run_id, job_id, attempt)
+        attempt_name = _container_name(run_root, run_id, job_id, attempt)
         attempt_args, inherited = build_container_args(manifest, case, attempt_name, attempt_evidence, base)
         started = time.monotonic()
         exit_code, raw_stdout, raw_stderr, timed_out, infrastructure_failed = _invoke_container(
@@ -1430,24 +1470,40 @@ def publish_authoritative_summary_report(
     return committed, report_path
 
 
+def _concurrency_arg(value: str) -> str | int:
+    # ArgumentTypeError (not ValueError) keeps argparse from echoing the value.
+    if value == "auto":
+        return value
+    try:
+        concurrency = int(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError("expected a positive integer or auto") from None
+    if concurrency < 1:
+        raise argparse.ArgumentTypeError("expected a positive integer or auto")
+    return concurrency
+
+
 def _main(diagnostics: BufferedDiagnostics) -> int:
     argv = sys.argv[1:]
+    if _VALIDATOR._help_requested(argv):
+        diagnostics.add(RUNNER_USAGE)
+        return 0
     # Best-effort secret names before argparse so even usage errors are redacted.
     diagnostics.set_inherited_names(_VALIDATOR._preliminary_names(argv))
 
     parser = SilentArgumentParser(
-        description="Apple Container検証行列を並列実行する", add_help=False
+        description="Apple Container検証行列を並列実行する", add_help=False, exit_on_error=False
     )
-    parser.add_argument("manifest", type=Path)
-    parser.add_argument("--run-id", required=True)
-    parser.add_argument("--concurrency", default="auto")
+    parser.add_argument("manifest", type=Path, nargs="?")
+    parser.add_argument("--run-id")
+    parser.add_argument("--concurrency", type=_concurrency_arg, default="auto")
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--results-dir", type=Path, default=Path("results"))
     try:
-        args = parser.parse_args(argv)
-    except CliArgumentError:
-        diagnostics.add("ERROR: invalid arguments", stderr=True)
+        args = parser.parse_cli(argv, required=("manifest", "run_id"))
+    except CliArgumentError as exc:
+        diagnostics.add("ERROR: " + exc.public_message, stderr=True)
         return 2
     manifest_path = args.manifest.resolve()
 
@@ -1462,7 +1518,7 @@ def _main(diagnostics: BufferedDiagnostics) -> int:
         return 2
 
     try:
-        manifest, errors, warnings = validate_manifest(manifest_path)
+        manifest, errors, warnings, manifest_hash = load_validated_manifest(manifest_path)
     except ValueError as exc:
         safe_print("ERROR: " + str(exc), file=sys.stderr)
         return 2
@@ -1514,15 +1570,7 @@ def _main(diagnostics: BufferedDiagnostics) -> int:
     if args.concurrency == "auto":
         concurrency = recommended_concurrency(manifest, len(jobs))
     else:
-        try:
-            concurrency = int(args.concurrency)
-        except ValueError:
-            safe_print(redact_inherited_text("ERROR: concurrencyはautoまたは正整数", inherited_names), file=sys.stderr)
-            return 2
-        if concurrency < 1:
-            safe_print(redact_inherited_text("ERROR: concurrencyは1以上", inherited_names), file=sys.stderr)
-            return 2
-        concurrency = min(concurrency, manifest["defaults"].get("maxConcurrency", concurrency), len(jobs))
+        concurrency = min(args.concurrency, manifest["defaults"].get("maxConcurrency", args.concurrency), len(jobs))
     shared_writable_mount = any(
         mount.get("readonly", True) is not True for mount in manifest.get("mounts", [])
     )
@@ -1569,7 +1617,6 @@ def _main(diagnostics: BufferedDiagnostics) -> int:
     container_version = redact_inherited_text(version_probe.stdout.strip(), inherited_names)
     skill_root = Path(__file__).resolve().parent.parent
     try:
-        manifest_hash = sha256_file(manifest_path)
         mount_inputs = {
             mount["source"]: resolve_mount_input(base, mount["source"], f"mount source {index}")
             for index, mount in enumerate(manifest.get("mounts", []))

@@ -115,9 +115,12 @@ class CompleteDiagnosticStreamTests(unittest.TestCase):
             with mock.patch.dict(os.environ, {"TOKEN": secret}, clear=False), mock.patch.object(
                 sys, "argv", argv
             ), mock.patch.object(
-                RUNNER, "validate_manifest", return_value=(value, [], ["first"])
-            ), mock.patch.object(RUNNER.shutil, "which", return_value=None), contextlib.redirect_stderr(stderr):
+                RUNNER, "load_validated_manifest",
+                return_value=(value, [], ["first"], hashlib.sha256(path.read_bytes()).hexdigest()),
+            ) as patched, mock.patch.object(RUNNER.shutil, "which", return_value=None), contextlib.redirect_stderr(stderr):
                 self.assertEqual(2, RUNNER.main())
+            patched.assert_called_once()
+            self.assertIn("WARNING: ", stderr.getvalue())
             self.assertNotIn(secret, stderr.getvalue())
 
 

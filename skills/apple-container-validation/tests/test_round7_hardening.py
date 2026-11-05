@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import importlib.util
 import io
 import json
@@ -282,7 +283,8 @@ class ValidationTests(unittest.TestCase):
             output = io.StringIO()
             argv = ["run-matrix.py", str(manifest_path), "--run-id", "run", "--results-dir", str(results)]
             with (mock.patch.object(sys, "argv", argv),
-                  mock.patch.object(RUNNER, "validate_manifest", return_value=(manifest, [], [])),
+                  mock.patch.object(RUNNER, "load_validated_manifest",
+                                    return_value=(manifest, [], [], hashlib.sha256(b"{}").hexdigest())),
                   mock.patch.object(RUNNER.shutil, "which", return_value="/bin/container"),
                   mock.patch.object(RUNNER, "run_capture", side_effect=capture),
                   mock.patch.object(RUNNER, "execute_job", side_effect=execute),

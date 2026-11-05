@@ -3,13 +3,13 @@
 ## ステータス
 
 - Preflight/report disposition: `<READY / BLOCKED / NOT RUN>`
-- Claim outcome: `<SUPPORTED WITHIN TESTED SCOPE / FALSIFIED / UNVERIFIED>`
+- Claim outcome: `<SUPPORTED WITHIN TESTED SCOPE / PARTIALLY SUPPORTED WITHIN TESTED SCOPE / FALSIFIED / UNVERIFIED>`
 - Execution status: `<COMPLETE / INCOMPLETE / DRY RUN>`
 - Run ID: `<run-id / none>`
 - 検証日: `<ISO 8601>`
 - 判定済みジョブ: `<oracle-pass + oracle-fail> / <全ジョブ>`
 
-複数のrun（イメージやバージョンの比較など）をまとめる場合は、上の項目をrun別の表にし、全体の結論と結合規則（1つでも`FALSIFIED`なら反証、全runが支持のときだけ支持など）を明記する。
+複数のrun（イメージやバージョンの比較など）をまとめる場合は、上の項目をrun別の表にし、全体の結論と結合規則（1つでも`FALSIFIED`なら反証、全runが`SUPPORTED WITHIN TESTED SCOPE`のときだけ支持、`PARTIALLY SUPPORTED WITHIN TESTED SCOPE`のrunを含めば支持としない、など）を明記する。
 
 `READY`はホストpreflightが成功し、runnerがレポートを出力したことだけを示す。実行完了や主張支持を意味せず、`READY`と`INCOMPLETE`は両立する。`COMPLETE`は全ジョブを観察してオラクル判定まで完了したことを示し、全オラクル成立を意味しない。`oracle-fail`も判定済みである。タイムアウト、基盤エラー、結果欠損は`INCOMPLETE`とする。runner起動前に停止した場合はPreflight/report dispositionへ`BLOCKED`または`NOT RUN`を書き、Execution statusは`not emitted (runner not invoked)`と記す。これは第4の`executionStatus`値ではない。
 
@@ -70,7 +70,7 @@
 
 ## 推論
 
-観察から導ける範囲を記述する。観察と同じ節へ混ぜない。期待IDへ一意に対応する`falsify`の`oracle-pass`が1件でもあれば、実行状態が`INCOMPLETE`でも反証とする。検証範囲内で支持できるのは、期待した`support`が1件以上あり、全`support`が一意に存在して`oracle-pass`、全`falsify`が一意に存在して判定済みの`oracle-fail`、かつ重複・期待外・匿名結果がない場合だけである。証拠整合性に異常がない限り、`neutral`だけの欠損や未判定は支持証拠を消さない。`support`または`falsify`の欠損・未判定・timeout・基盤エラーや証拠整合性異常があれば未検証とする。
+観察から導ける範囲を記述する。観察と同じ節へ混ぜない。期待IDへ一意に対応する`falsify`の`oracle-pass`が1件でもあれば、実行状態が`INCOMPLETE`でも反証とする。検証範囲内で支持できるのは、期待した`support`が1件以上あり、全`support`が一意に存在して`oracle-pass`、全`falsify`が一意に存在して判定済みの`oracle-fail`、かつ`support`/`falsify`の重複、期待外・匿名結果がない場合だけである。全`support`が一意に判定済みで`oracle-pass`と`oracle-fail`が混在するときは部分的な支持にとどめる。`neutral`の欠損・未判定・重複は支持証拠を消さない。`support`または`falsify`の欠損・未判定・timeout・基盤エラーや期待外・匿名結果があれば未検証とする。
 
 ## 反証と不一致
 

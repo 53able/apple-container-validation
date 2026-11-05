@@ -184,6 +184,8 @@ class ConservativeSupportTests(unittest.TestCase):
             expected("falsify-r1", "falsify"),
             expected("neutral-r1", "neutral"),
         ]
+        two_support_jobs = [expected("support-r2", "support"), *expected_jobs]
+        three_support_jobs = [expected("support-r3", "support"), *two_support_jobs]
         cases = (
             (
                 "complete",
@@ -223,12 +225,51 @@ class ConservativeSupportTests(unittest.TestCase):
             (
                 "duplicate-neutral",
                 [result("support-r1", "oracle-pass"), result("falsify-r1", "oracle-fail"), result("neutral-r1", "oracle-pass"), result("neutral-r1", "oracle-pass")],
+                ("INCOMPLETE", "SUPPORTED WITHIN TESTED SCOPE", 1),
+            ),
+            (
+                "partial",
+                [result("support-r1", "oracle-pass"), result("support-r2", "oracle-fail"), result("falsify-r1", "oracle-fail"), result("neutral-r1", "oracle-pass")],
+                ("COMPLETE", "PARTIALLY SUPPORTED WITHIN TESTED SCOPE", 0),
+                two_support_jobs,
+            ),
+            (
+                "duplicate-neutral-partial",
+                [result("support-r1", "oracle-pass"), result("support-r2", "oracle-fail"), result("falsify-r1", "oracle-fail"), result("neutral-r1", "oracle-pass"), result("neutral-r1", "oracle-pass")],
+                ("INCOMPLETE", "PARTIALLY SUPPORTED WITHIN TESTED SCOPE", 1),
+                two_support_jobs,
+            ),
+            (
+                "duplicate-support",
+                [result("support-r1", "oracle-pass"), result("support-r1", "oracle-pass"), result("falsify-r1", "oracle-fail"), result("neutral-r1", "oracle-pass")],
                 ("INCOMPLETE", "UNVERIFIED", 1),
             ),
+            # 以下3行は `partial` 行と「未判定の support が1件あるか」だけが違う最小の組。
+            # support pass >= 1 かつ fail >= 1 だけで PARTIAL とする実装と、
+            # 全 support の判定済みを要求する実装を区別する。
+            (
+                "partial-support-timeout",
+                [result("support-r1", "oracle-pass"), result("support-r2", "oracle-fail"), result("support-r3", "timeout"), result("falsify-r1", "oracle-fail"), result("neutral-r1", "oracle-pass")],
+                ("INCOMPLETE", "UNVERIFIED", 1),
+                three_support_jobs,
+            ),
+            (
+                "partial-support-missing",
+                [result("support-r1", "oracle-pass"), result("support-r2", "oracle-fail"), result("falsify-r1", "oracle-fail"), result("neutral-r1", "oracle-pass")],
+                ("INCOMPLETE", "UNVERIFIED", 1),
+                three_support_jobs,
+            ),
+            (
+                "partial-support-infrastructure-error",
+                [result("support-r1", "oracle-pass"), result("support-r2", "oracle-fail"), result("support-r3", "infrastructure-error"), result("falsify-r1", "oracle-fail"), result("neutral-r1", "oracle-pass")],
+                ("INCOMPLETE", "UNVERIFIED", 1),
+                three_support_jobs,
+            ),
         )
-        for name, results, outcome in cases:
+        for name, results, outcome, *jobs in cases:
             with self.subTest(name=name):
-                self.assertEqual(outcome, _RUNNER.evaluate_run(results, expected_jobs, False))
+                row_jobs = jobs[0] if jobs else expected_jobs
+                self.assertEqual(outcome, _RUNNER.evaluate_run(results, row_jobs, False))
 
     def test_unique_falsify_pass_takes_precedence_over_integrity_anomaly(self) -> None:
         expected_jobs = [
@@ -255,6 +296,19 @@ class ConservativeSupportTests(unittest.TestCase):
             ("INCOMPLETE", "UNVERIFIED", 1),
             _RUNNER.evaluate_run(results, expected_jobs, False),
         )
+        with self.subTest(name="partial-support-duplicate-falsify-pass"):
+            self.assertEqual(
+                ("INCOMPLETE", "UNVERIFIED", 1),
+                _RUNNER.evaluate_run(
+                    [
+                        result("support-r1", "oracle-pass"),
+                        result("support-r2", "oracle-fail"),
+                        *results,
+                    ],
+                    [expected("support-r1", "support"), expected("support-r2", "support"), *expected_jobs],
+                    False,
+                ),
+            )
 
 
 if __name__ == "__main__":

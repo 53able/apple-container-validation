@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import importlib.util
 import io
 import json
@@ -164,7 +165,8 @@ class MainResumeGuardTests(unittest.TestCase):
         stdout = io.StringIO()
         with (
             mock.patch.object(sys, "argv", argv),
-            mock.patch.object(_RUNNER, "validate_manifest", return_value=(manifest, [], [])),
+            mock.patch.object(_RUNNER, "load_validated_manifest",
+                              return_value=(manifest, [], [], hashlib.sha256(b"{}").hexdigest())),
             contextlib.redirect_stderr(stderr),
             contextlib.redirect_stdout(stdout),
         ):

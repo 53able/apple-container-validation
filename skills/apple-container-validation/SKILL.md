@@ -53,7 +53,7 @@ compatibility: Requires an Apple silicon Mac running macOS 26 or later, Apple Co
 6. 前提条件もオラクルで確かめる。例えば「SIGTERMを無視するプロセス」を前提にするなら、ハーネスが前提成立を示すmarker（`TERM_IGNORED=yes`など）を出し、support/falsifyのオラクルに含める。前提が崩れたハーネスの結果が、そのまま主張の証拠として数えられるのを防ぐためである。
 7. 1つの観察で複数の棄却条件を判定できるなら、ケースを複製せず1件の`falsify`ケースの`criterionIds`へ複数のIDを並べる。支持側と反証側で同じ観察を読む場合は、1つのハーネスが複数のmarkerを出し、ケースごとに引数や条件を変える（validatorは同一コマンドの複製を警告する）。「XはYしない」型の主張では、Yが起きたときに成立するオラクルを`falsify`ケースに置く。
    事前登録した仮説の範囲外で見つかった反例（例: 既定シグナル前提の主張に対する`-s KILL`）は、仮説を後から書き換えずに`neutral`ケースとして記録し、レポートの限界・追加観察に書く。
-8. マニフェストはイメージを1つしか持てない。バージョンやイメージの比較は、同じケース集合のマニフェストをイメージごとに作り（生成スクリプトで書き出すと差分が混入しない）、別々のrun-idで実行する。全体の結論は、主張が全バージョンについてのものなら、1つでも`FALSIFIED`があれば反証、全runが`SUPPORTED WITHIN TESTED SCOPE`のときだけ支持とし、run別の結果を表で並べる。
+8. マニフェストはイメージを1つしか持てない。バージョンやイメージの比較は、同じケース集合のマニフェストをイメージごとに作り（生成スクリプトで書き出すと差分が混入しない）、別々のrun-idで実行する。全体の結論は、主張が全バージョンについてのものなら、1つでも`FALSIFIED`があれば反証、全runが`SUPPORTED WITHIN TESTED SCOPE`のときだけ支持とする。`PARTIALLY SUPPORTED WITHIN TESTED SCOPE`のrunが1つでも含まれる場合、全体の結論は支持としない。run別の結果を表で並べる。
 9. 隔離を既定にする。通信不要なら`network: "none"`、入力は読み取り専用マウント、書き込み先は各ケース固有の`/evidence`だけにする。外部通信・秘密情報・書き込みマウントは必要なケースだけ明示する。
 10. ハーネスを書く場合はスキル同梱の`references/runtime-conventions.md`に従う（Python依存は`uv`でロック、JS系はTypeScript 7 + `tsx` + `pino`）。
 11. Claude Code/Codex CLIを使う場合はスキル同梱の`references/agent-cli-subscriptions.md`に従う。認証はsubscription（`CLAUDE_CODE_OAUTH_TOKEN`、ChatGPT認証または`CODEX_ACCESS_TOKEN`）に限り、APIキーを渡さない。ログインはホスト上で人間が行い、認証情報をイメージ・manifest・Git・ログ・成果物へ残さない。
@@ -68,7 +68,7 @@ python3 <skill-dir>/scripts/validate-manifest.py path/to/manifest.json
 
 ### 5. スモーク検証をする
 
-壊れたハーネスを大量並列すると、大量の無意味な失敗と後片付けだけが残る。本実行の前に小さく通す。始める前にスキル同梱の`references/runner-operations.md`を一度読む（`--results-dir`の既定はcwd、`--help`は使えない）。
+壊れたハーネスを大量並列すると、大量の無意味な失敗と後片付けだけが残る。本実行の前に小さく通す。始める前にスキル同梱の`references/runner-operations.md`を一度読む（`--results-dir`の既定はcwd。引数は`--help`で確認できる）。
 
 1. 代表ケース、負例、失敗系を各1件以上選んだ一時マニフェストを作る。抜き出したfalsifyケースが参照しない棄却条件は`falsificationCriteria`からも外す（外さないとvalidatorが未接続としてエラーにする）。ジョブ数やケース群が少ない警告はスモークでは無視してよい。スモークは`--results-dir results-smoke`など本実行と別の場所に出す。スモーク後にハーネスを直した場合は、入力hashが変わったことをレポートに書く。
 2. ハーネスを`container run`で直接試すより、最初からrunnerの`--dry-run`で生成コマンドとマウントを確認し、続けてrunnerで実行する。runnerが付けるフラグ込みで試さないと、本実行で挙動が変わる。
@@ -98,9 +98,10 @@ python3 <skill-dir>/scripts/run-matrix.py path/to/manifest.json \
 - **実行状態と仮説評価は別の軸である。** `executionStatus`は「全ジョブを判定し終えたか」（`COMPLETE`/`INCOMPLETE`/`DRY RUN`）、`claimOutcome`は「判定済み証拠が仮説をどう動かすか」を示す。`COMPLETE`は全オラクル成立を意味しないし、`INCOMPLETE`でも判定済みの証拠は捨てない。
 - **`claimOutcome`の優先順:**
   1. 一意な`falsify`ジョブの`oracle-pass`が1件でもあれば、他の欠損に関係なく`FALSIFIED`。
-  2. `support`ジョブが1件以上あり、全`support`ジョブが一意に`oracle-pass`、全`falsify`ジョブが判定済み`oracle-fail`、重複・期待外・匿名結果なし、の全条件を満たすときだけ`SUPPORTED WITHIN TESTED SCOPE`。
-  3. それ以外（`support`/`falsify`の欠損・timeout・基盤エラー、`support`の`oracle-fail`、支持証拠なし）は`UNVERIFIED`。`falsify`のtimeoutを「反証なし」と読み替えない。
-  - `neutral`は仮説評価を直接動かさない。その欠損・未判定は支持を消さないが、重複は証拠整合性の異常として支持を止める。
+  2. `support`ジョブが1件以上あり、全`support`ジョブが一意に`oracle-pass`、全`falsify`ジョブが判定済み`oracle-fail`、`support`/`falsify`の重複・期待外・匿名結果なし、の全条件を満たすときだけ`SUPPORTED WITHIN TESTED SCOPE`。
+  3. 全`falsify`ジョブが判定済み`oracle-fail`、全`support`ジョブが一意に判定済み（`oracle-pass`か`oracle-fail`）で、`oracle-pass`が1件以上かつ全件ではない（`oracle-fail`が1件以上ある）場合は`PARTIALLY SUPPORTED WITHIN TESTED SCOPE`。`support`/`falsify`の重複・期待外・匿名結果なしが前提。
+  4. それ以外（`support`/`falsify`の欠損・timeout・基盤エラー、`support`の`oracle-pass`が0件、支持証拠なし）は`UNVERIFIED`。`support`に欠損・未判定・timeout・基盤エラーが1件でもあれば`PARTIALLY SUPPORTED WITHIN TESTED SCOPE`にしない。`falsify`のtimeoutを「反証なし」と読み替えない。
+  - `neutral`は仮説評価を直接動かさない。期待外・匿名の結果は期待IDとの対応そのものを崩すため支持を止めるが、`neutral`の重複は対応が取れており仮説評価に入らないため支持を止めない（実行は`INCOMPLETE`）。
 - **自動判定は暫定である。** `launcherOriginVerification`が`NOT VERIFIED BY RUNNER`のとき`claimOutcome`は暫定で、CIはこれ単独で主張の真偽をgateしない。claim-bearing caseについて、payload markerがstdoutにあること、stderrに起動・設定エラーがないこと、実行直後のApple Container system logに該当時間帯の起動失敗がないことを確認し、確認した範囲をレポートに書く。確認手順とノイズの見分け方はスキル同梱の`references/runner-operations.md`の「起動失敗の手作業確認」にある。
 - 秘密値の漏えいは、`stdoutNotContains`/`stderrNotContains`の否定条件で検出できる（判定はリダクト前の生出力に対して行われる）。
 - イメージのdigestは`results/<run-id>/image-inspect.json`から取る（`run-manifest.json`の`image`はタグだけ）。
