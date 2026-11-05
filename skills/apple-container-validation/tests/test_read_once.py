@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""manifestを1回だけ読み、検証とハッシュに同じバイト列を使う契約のテスト。"""
+"""manifestとresume時のattemptログを1回だけ読み、検証とハッシュに同じバイト列を使う契約のテスト。"""
 from __future__ import annotations
 
 import contextlib
@@ -8,6 +8,7 @@ import importlib.util
 import io
 import json
 import pathlib
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -28,6 +29,7 @@ def load(path: Path, name: str):
 
 RUNNER = load(ROOT / "scripts" / "run-matrix.py", "acv_read_once_runner")
 VALIDATOR = load(ROOT / "scripts" / "validate-manifest.py", "acv_read_once_validator")
+RUN_MATRIX_TESTS = load(ROOT / "tests" / "test_run_matrix.py", "acv_read_once_run_matrix_tests")
 
 
 def manifest() -> dict:
@@ -128,6 +130,75 @@ class ManifestReadOnceTests(unittest.TestCase):
             for name in ("invalid-json", "non-utf8", "lone-surrogate", "missing", "directory"):
                 with self.subTest(raises=name), self.assertRaises(ValueError):
                     VALIDATOR.validate_manifest(paths[name])
+
+
+class ResumeAttemptLogReadOnceTests(unittest.TestCase):
+    def test_resume_reads_each_attempt_log_once(self):
+        fixture = RUN_MATRIX_TESTS.ResumeResultTests()
+        with tempfile.TemporaryDirectory() as directory:
+            run_root = Path(directory)
+            result_path = fixture.seed_resume_result(run_root)
+            job_root = result_path.parent
+            targets = {
+                (job_root / name).resolve(): name
+                for name in ("stdout.log", "stderr.log", "attempts/1/stdout.log", "attempts/1/stderr.log")
+            }
+            opened = {name: [] for name in targets.values()}
+            original_open = pathlib.Path.open
+
+            def counting_open(self, *args, **kwargs):
+                mode = args[0] if args else kwargs.get("mode", "r")
+                name = targets.get(Path(self).resolve())
+                if name is not None:
+                    opened[name].append(mode)
+                return original_open(self, *args, **kwargs)
+
+            with mock.patch.object(pathlib.Path, "open", counting_open):
+                existing, status, *_ = RUNNER._verify_resume_result(
+                    fixture.manifest(), fixture.case(), 1, "test-run",
+                    run_root, run_root, job_root, result_path,
+                )
+        self.assertEqual("oracle-pass", status)
+        self.assertEqual("resume-case-r1", existing["jobId"])
+        for name, modes in opened.items():
+            with self.subTest(log=name):
+                self.assertEqual(["rb"], modes)
+
+    def test_timeout_crlf_log_oracle_matches_on_resume(self):
+        test_manifest = {
+            "image": {"tag": "example:1"},
+            "defaults": {"timeoutSeconds": 10, "retries": 0},
+            "mounts": [],
+        }
+        case = {
+            "id": "crlf-case", "group": "target", "description": "description",
+            "relation": "support", "criterionIds": ["criterion"], "command": ["true"],
+            "oracle": {"exitCode": 0, "stdoutContains": ["A\nB"]}, "retries": 0,
+        }
+
+        def timeout_capture(args, **kwargs):
+            if args[:2] == ["container", "run"]:
+                raise subprocess.TimeoutExpired(args, 1, output=b"A\r\nB", stderr=b"")
+            raise AssertionError(args)
+
+        with tempfile.TemporaryDirectory() as directory:
+            run_root = Path(directory)
+            with mock.patch.object(RUNNER, "run_capture", side_effect=timeout_capture), mock.patch.object(
+                RUNNER.subprocess, "run", return_value=mock.Mock(returncode=0, stdout="", stderr="")
+            ):
+                fresh = RUNNER.execute_job(test_manifest, case, 1, "run", run_root, run_root, False)
+            job_root = run_root / "jobs" / "crlf-case-r1"
+            self.assertEqual(b"A\r\nB", (job_root / "attempts" / "1" / "stdout.log").read_bytes())
+            self.assertEqual("timeout", fresh["status"])
+            persisted = json.loads((job_root / "result.json").read_text(encoding="utf-8"))
+            self.assertIn("stdoutContains[0] failed", persisted["oracleFailures"])
+            with mock.patch.object(RUNNER, "run_capture", side_effect=AssertionError("resume must not run")):
+                resumed = RUNNER.execute_job(
+                    test_manifest, case, 1, "run", run_root, run_root, False,
+                    persist_resume_rebind=False,
+                )
+        self.assertEqual(fresh["oracleFailures"], resumed["oracleFailures"])
+        self.assertEqual("timeout", resumed["status"])
 
 
 if __name__ == "__main__":

@@ -370,10 +370,11 @@ def load_json_object(path: Path, *, root: Path, label: str) -> dict[str, Any]:
     return value
 
 
-def read_resume_text(root: Path, path: Path, label: str) -> str:
+def decode_resume_text(data: bytes) -> str:
+    """ハッシュ照合済みのattemptログを改行変換なしでデコードする（新規実行時のoracle入力と揃える）。"""
     try:
-        return require_real_file(root, path, label).read_text(encoding="utf-8")
-    except (OSError, UnicodeDecodeError, RuntimeError) as exc:
+        return data.decode("utf-8")
+    except UnicodeDecodeError as exc:
         raise ResumeIntegrityError("persisted resume text is unreadable") from exc
 
 
@@ -969,10 +970,13 @@ def _verify_resume_result(
         )
         if command != redact_command(expected_args, expected_inherited):
             raise RuntimeError(f"resume attempt command mismatch: {attempt_root}")
+        attempt_logs: dict[str, bytes] = {}
         for log_name, hash_name in _LOG_HASH_FIELDS:
             log_path = require_real_file(attempt_root, attempt_root / log_name, "resume attempt log")
-            if sha256_file(log_path) != attempt_record.get(hash_name):
+            data = log_path.read_bytes()
+            if sha256_bytes(data) != attempt_record.get(hash_name):
                 raise RuntimeError(f"resume attempt log hash mismatch: {log_path}")
+            attempt_logs[log_name] = data
         actual_hashes, artifact_failures = collect_artifact_hashes(attempt_evidence)
         if artifact_failures or actual_hashes != attempt_record.get("artifactSha256", {}):
             raise RuntimeError(f"resume attempt artifact mismatch: {attempt_evidence}")
@@ -986,12 +990,8 @@ def _verify_resume_result(
                 raise RuntimeError(f"resume infrastructure attempt outcome is invalid: {result_path}")
         elif (timed_out and exit_code is not None) or (not timed_out and type(exit_code) is not int):
             raise RuntimeError(f"resume attempt outcome is invalid: {result_path}")
-        attempt_stdout = read_resume_text(
-            attempt_root, attempt_root / "stdout.log", "resume attempt stdout"
-        )
-        attempt_stderr = read_resume_text(
-            attempt_root, attempt_root / "stderr.log", "resume attempt stderr"
-        )
+        attempt_stdout = decode_resume_text(attempt_logs["stdout.log"])
+        attempt_stderr = decode_resume_text(attempt_logs["stderr.log"])
         if infrastructure_error:
             passed, failures = False, _infrastructure_failures(attempt_stderr)
         else:
