@@ -99,7 +99,7 @@ python3 <skill-dir>/scripts/run-matrix.py path/to/manifest.json \
 - **`claimOutcome`の優先順:**
   1. 一意な`falsify`ジョブの`oracle-pass`が1件でもあれば、他の欠損に関係なく`FALSIFIED`。
   2. `support`ジョブが1件以上あり、全`support`ジョブが一意に`oracle-pass`、全`falsify`ジョブが判定済み`oracle-fail`、`support`/`falsify`の重複・期待外・匿名結果なし、の全条件を満たすときだけ`SUPPORTED WITHIN TESTED SCOPE`。
-  3. 全`falsify`ジョブが判定済み`oracle-fail`、全`support`ジョブが一意に判定済み（`oracle-pass`か`oracle-fail`）で、`oracle-pass`が1件以上かつ全件ではない（`oracle-fail`が1件以上ある）場合は`PARTIALLY SUPPORTED WITHIN TESTED SCOPE`。重複・期待外・匿名結果なしが前提。
+  3. 全`falsify`ジョブが判定済み`oracle-fail`、全`support`ジョブが一意に判定済み（`oracle-pass`か`oracle-fail`）で、`oracle-pass`が1件以上かつ全件ではない（`oracle-fail`が1件以上ある）場合は`PARTIALLY SUPPORTED WITHIN TESTED SCOPE`。`support`/`falsify`の重複・期待外・匿名結果なしが前提。
   4. それ以外（`support`/`falsify`の欠損・timeout・基盤エラー、`support`の`oracle-pass`が0件、支持証拠なし）は`UNVERIFIED`。`support`に欠損・未判定・timeout・基盤エラーが1件でもあれば`PARTIALLY SUPPORTED WITHIN TESTED SCOPE`にしない。`falsify`のtimeoutを「反証なし」と読み替えない。
   - `neutral`は仮説評価を直接動かさない。期待外・匿名の結果は期待IDとの対応そのものを崩すため支持を止めるが、`neutral`の重複は対応が取れており仮説評価に入らないため支持を止めない（実行は`INCOMPLETE`）。
 - **自動判定は暫定である。** `launcherOriginVerification`が`NOT VERIFIED BY RUNNER`のとき`claimOutcome`は暫定で、CIはこれ単独で主張の真偽をgateしない。claim-bearing caseについて、payload markerがstdoutにあること、stderrに起動・設定エラーがないこと、実行直後のApple Container system logに該当時間帯の起動失敗がないことを確認し、確認した範囲をレポートに書く。確認手順とノイズの見分け方はスキル同梱の`references/runner-operations.md`の「起動失敗の手作業確認」にある。

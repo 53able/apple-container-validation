@@ -76,6 +76,13 @@ TABLE = [
      "ERROR: unexpected positional argument", "ERROR: unexpected positional argument"),
     ("separator-then-bogus", [M, REQUIRED, "--", "--bogus"], [M, "--", "--bogus"],
      "ERROR: unexpected positional argument", "ERROR: unexpected positional argument"),
+    # A token exactly equal to "--" suppresses the unknown-option name even when the
+    # unknown option comes before it (pins the has_separator branch in parse_cli).
+    ("bogus-before-separator", [M, REQUIRED, "--bogus", "--", "x"], [M, "--bogus", "--", "x"],
+     "ERROR: unrecognized option", "ERROR: unrecognized option"),
+    ("lowercase-option-before-separator-secret", [M, REQUIRED, "--lowercase-like", "--", S],
+     [M, "--lowercase-like", "--", S],
+     "ERROR: unrecognized option", "ERROR: unrecognized option"),
     ("extra-positional", [M, REQUIRED, S], [M, S],
      "ERROR: unexpected positional argument", "ERROR: unexpected positional argument"),
     ("ambiguous-prefix", [M, REQUIRED, "--r", S], [M, "--r", S],
@@ -94,7 +101,8 @@ TABLE = [
      "ERROR: unrecognized option: --bogus", None),
 ]
 NO_SECRET_ROWS = {"lowercase-secret-like", "run-id-eq-separator", "concurrency-eq-separator",
-                  "run-id-eq-separator-then-bogus", "separator-then-bogus", "concurrency-0",
+                  "run-id-eq-separator-then-bogus", "separator-then-bogus", "bogus-before-separator",
+                  "concurrency-0",
                   "run-id-missing", "run-id-no-value", "manifest-missing"}
 
 
@@ -195,7 +203,7 @@ class CliUsabilityTests(unittest.TestCase):
     def test_argument_errors_never_echo_values(self):
         path = str(self.manifest_path)
         rows = [row for row in TABLE if row[0] not in NO_SECRET_ROWS]
-        self.assertEqual(10, len(rows))
+        self.assertEqual(11, len(rows))
         for label, runner_argv, validator_argv, _, _ in rows:
             invocations = [(RUNNER_PATH, expand(runner_argv, path, SECRET, runner=True))]
             if validator_argv is not None:
