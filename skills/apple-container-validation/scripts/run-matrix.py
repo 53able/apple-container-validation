@@ -662,6 +662,8 @@ def collect_artifact_hashes(evidence: Path) -> tuple[dict[str, str], list[str]]:
     return hashes, failures
 
 
+PARTIALLY_SUPPORTED = "PARTIALLY SUPPORTED WITHIN TESTED SCOPE"
+
 JOB_STATUS_KEYS = (
     "oracle-pass",
     "oracle-fail",
@@ -701,10 +703,26 @@ def evaluate_run(
         for job_id, candidates in results_by_id.items()
         if job_id in expected_by_id and len(candidates) == 1
     }
+    support_ids = {
+        job_id
+        for job_id, expected in expected_by_id.items()
+        if expected.get("relation") == "support"
+    }
+    falsify_ids = {
+        job_id
+        for job_id, expected in expected_by_id.items()
+        if expected.get("relation") == "falsify"
+    }
     has_unexpected_ids = bool(set(results_by_id) - set(expected_by_id))
     has_duplicate_ids = any(len(candidates) != 1 for candidates in results_by_id.values())
     evidence_integrity_clean = not (
         has_anonymous_results or has_unexpected_ids or has_duplicate_ids
+    )
+    # neutral の重複は期待 ID との対応を崩さないので、仮説評価の整合性からは外す。
+    claim_integrity_clean = not (
+        has_anonymous_results
+        or has_unexpected_ids
+        or any(len(results_by_id.get(i, [])) > 1 for i in support_ids | falsify_ids)
     )
     identities_complete = (
         evidence_integrity_clean
@@ -734,27 +752,31 @@ def evaluate_run(
     ):
         return execution_status, "FALSIFIED", exit_code
 
-    support_ids = {
-        job_id
-        for job_id, expected in expected_by_id.items()
-        if expected.get("relation") == "support"
-    }
-    falsify_ids = {
-        job_id
-        for job_id, expected in expected_by_id.items()
-        if expected.get("relation") == "falsify"
-    }
-    support_complete = bool(support_ids) and all(
-        job_id in matched and matched[job_id].get("status") == "oracle-pass"
+    support_adjudicated = all(
+        job_id in matched and matched[job_id].get("status") in adjudicated_statuses
         for job_id in support_ids
     )
     falsify_adjudicated = all(
         job_id in matched and matched[job_id].get("status") == "oracle-fail"
         for job_id in falsify_ids
     )
-    if evidence_integrity_clean and support_complete and falsify_adjudicated:
-        return execution_status, "SUPPORTED WITHIN TESTED SCOPE", exit_code
+    if not (
+        claim_integrity_clean
+        and falsify_adjudicated
+        and support_ids
+        and support_adjudicated
+    ):
+        return execution_status, "UNVERIFIED", exit_code
 
+    support_passes = sum(
+        1
+        for job_id in support_ids
+        if job_id in matched and matched[job_id].get("status") == "oracle-pass"
+    )
+    if support_passes == len(support_ids):
+        return execution_status, "SUPPORTED WITHIN TESTED SCOPE", exit_code
+    if support_passes:
+        return execution_status, PARTIALLY_SUPPORTED, exit_code
     return execution_status, "UNVERIFIED", exit_code
 
 
@@ -772,7 +794,7 @@ def aggregate_run_results(
             counts["other/unadjudicated"] += 1
     execution_status, claim_outcome, exit_code = evaluate_run(results, expected_jobs, dry_run)
     return {
-        "version": 2,
+        "version": 3,
         "executionStatus": execution_status,
         "claimOutcome": claim_outcome,
         "jobs": len(expected_jobs),

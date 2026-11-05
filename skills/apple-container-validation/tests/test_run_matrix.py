@@ -85,6 +85,13 @@ class EvaluateRunTests(unittest.TestCase):
         ):
             with self.subTest(results=results):
                 self.assert_evaluation(results, expected_jobs, ("INCOMPLETE", "UNVERIFIED", 1))
+        two_support_jobs = [expected("support-r2", "support"), *expected_jobs]
+        for results in (
+            [result("support-r1", "oracle-pass"), result("support-r2", "timeout"), result("neutral-r1", "oracle-pass")],
+            [result("support-r1", "oracle-pass"), result("neutral-r1", "oracle-pass")],
+        ):
+            with self.subTest(two_support_results=results):
+                self.assert_evaluation(results, two_support_jobs, ("INCOMPLETE", "UNVERIFIED", 1))
 
     def test_duplicate_missing_and_unexpected_ids_are_incomplete(self) -> None:
         expected_jobs = [expected("support-r1", "support")]
@@ -133,6 +140,16 @@ class EvaluateRunTests(unittest.TestCase):
             expected_jobs,
             ("COMPLETE", "FALSIFIED", 0),
         )
+        with self.subTest(name="partial-support-with-falsify-pass"):
+            self.assert_evaluation(
+                [
+                    result("support-r1", "oracle-pass"),
+                    result("support-r2", "oracle-fail"),
+                    result("falsify-r1", "oracle-pass"),
+                ],
+                [expected("support-r2", "support"), *expected_jobs],
+                ("COMPLETE", "FALSIFIED", 0),
+            )
 
     def test_order_independent_with_repeats(self) -> None:
         expected_jobs = [expected("support-r1", "support"), expected("support-r2", "support")]
@@ -142,7 +159,7 @@ class EvaluateRunTests(unittest.TestCase):
         self.assert_evaluation(
             [result("support-r1", "oracle-pass"), result("support-r2", "oracle-fail")],
             expected_jobs,
-            ("COMPLETE", "UNVERIFIED", 0),
+            ("COMPLETE", "PARTIALLY SUPPORTED WITHIN TESTED SCOPE", 0),
         )
 
     def test_duplicate_expected_id_is_rejected(self) -> None:
@@ -184,6 +201,7 @@ class AggregationContractTests(unittest.TestCase):
             ("complete-supported", [expected("s", "support")], [result("s", "oracle-pass")], False, "COMPLETE", "SUPPORTED WITHIN TESTED SCOPE", 0),
             ("complete-falsified", [expected("f", "falsify")], [result("f", "oracle-pass")], False, "COMPLETE", "FALSIFIED", 0),
             ("complete-unverified", [expected("s", "support")], [result("s", "oracle-fail")], False, "COMPLETE", "UNVERIFIED", 0),
+            ("complete-partial", [expected("s1", "support"), expected("s2", "support")], [result("s1", "oracle-pass"), result("s2", "oracle-fail")], False, "COMPLETE", "PARTIALLY SUPPORTED WITHIN TESTED SCOPE", 0),
             ("incomplete-falsified", [expected("f", "falsify"), expected("n", "neutral")], [result("f", "oracle-pass"), result("n", "timeout")], False, "INCOMPLETE", "FALSIFIED", 1),
             ("incomplete-unverified", [expected("s", "support")], [result("s", "infrastructure-error")], False, "INCOMPLETE", "UNVERIFIED", 1),
             ("dry-run", [expected("s", "support")], [result("s", "dry-run")], True, "DRY RUN", "UNVERIFIED", 0),
@@ -192,7 +210,7 @@ class AggregationContractTests(unittest.TestCase):
         for name, expected_jobs, results, dry_run, execution, claim, exit_code in matrix:
             with self.subTest(name=name):
                 aggregation, actual_exit = _RUNNER.aggregate_run_results(results, expected_jobs, dry_run)
-                self.assertEqual(2, aggregation["version"])
+                self.assertEqual(3, aggregation["version"])
                 self.assertEqual(execution, aggregation["executionStatus"])
                 self.assertEqual(claim, aggregation["claimOutcome"])
                 self.assertEqual(exit_code, actual_exit)
