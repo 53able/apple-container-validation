@@ -1570,8 +1570,7 @@ def _main(diagnostics: BufferedDiagnostics) -> int:
     if args.concurrency == "auto":
         concurrency = recommended_concurrency(manifest, len(jobs))
     else:
-        concurrency = args.concurrency
-        concurrency = min(concurrency, manifest["defaults"].get("maxConcurrency", concurrency), len(jobs))
+        concurrency = min(args.concurrency, manifest["defaults"].get("maxConcurrency", args.concurrency), len(jobs))
     shared_writable_mount = any(
         mount.get("readonly", True) is not True for mount in manifest.get("mounts", [])
     )

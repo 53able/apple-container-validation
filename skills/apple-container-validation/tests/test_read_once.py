@@ -44,6 +44,28 @@ def manifest() -> dict:
     }
 
 
+def job_manifest() -> dict:
+    return {
+        "image": {"tag": "example:1"},
+        "defaults": {"timeoutSeconds": 10, "retries": 0},
+        "mounts": [],
+    }
+
+
+def recording_open(targets: dict[Path, str]):
+    """Path.openをラップし、対象パスごとに開いたモードを記録するpatchと記録先を返す。"""
+    opened: dict[str, list[str]] = {name: [] for name in targets.values()}
+    original_open = pathlib.Path.open
+
+    def counting_open(self, *args, **kwargs):
+        name = targets.get(Path(self).resolve())
+        if name is not None:
+            opened[name].append(args[0] if args else kwargs.get("mode", "r"))
+        return original_open(self, *args, **kwargs)
+
+    return mock.patch.object(pathlib.Path, "open", counting_open), opened
+
+
 def capture(args, **kwargs):
     if args == ["container", "--version"]:
         return mock.Mock(returncode=0, stdout="container 1\n", stderr="")
@@ -62,22 +84,13 @@ class ManifestReadOnceTests(unittest.TestCase):
             path.write_text(json.dumps(manifest()), encoding="utf-8")
             target = path.resolve()
             results = base / "results"
-            modes: list[str] = []
-            original_open = pathlib.Path.open
-
-            def counting_open(self, *args, **kwargs):
-                mode = args[0] if args else kwargs.get("mode", "r")
-                if Path(self).resolve() == target:
-                    modes.append(mode)
-                return original_open(self, *args, **kwargs)
-
+            open_patch, opened = recording_open({target: "manifest"})
+            modes = opened["manifest"]
             argv = ["run-matrix.py", str(path), "--run-id", "run", "--dry-run", "--results-dir", str(results)]
             stdout, stderr = io.StringIO(), io.StringIO()
             with mock.patch.object(sys, "argv", argv), mock.patch.object(
                 RUNNER.shutil, "which", return_value="/bin/container"
-            ), mock.patch.object(RUNNER, "run_capture", side_effect=capture), mock.patch.object(
-                pathlib.Path, "open", counting_open
-            ), mock.patch.object(
+            ), mock.patch.object(RUNNER, "run_capture", side_effect=capture), open_patch, mock.patch.object(
                 RUNNER, "sha256_file", wraps=RUNNER.sha256_file
             ) as hashed, contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
                 code = RUNNER.main()
@@ -139,21 +152,11 @@ class ResumeAttemptLogReadOnceTests(unittest.TestCase):
             run_root = Path(directory)
             result_path = fixture.seed_resume_result(run_root)
             job_root = result_path.parent
-            targets = {
+            open_patch, opened = recording_open({
                 (job_root / name).resolve(): name
                 for name in ("stdout.log", "stderr.log", "attempts/1/stdout.log", "attempts/1/stderr.log")
-            }
-            opened = {name: [] for name in targets.values()}
-            original_open = pathlib.Path.open
-
-            def counting_open(self, *args, **kwargs):
-                mode = args[0] if args else kwargs.get("mode", "r")
-                name = targets.get(Path(self).resolve())
-                if name is not None:
-                    opened[name].append(mode)
-                return original_open(self, *args, **kwargs)
-
-            with mock.patch.object(pathlib.Path, "open", counting_open):
+            })
+            with open_patch:
                 existing, status, *_ = RUNNER._verify_resume_result(
                     fixture.manifest(), fixture.case(), 1, "test-run",
                     run_root, run_root, job_root, result_path,
@@ -167,11 +170,7 @@ class ResumeAttemptLogReadOnceTests(unittest.TestCase):
     def test_fresh_attempt_logs_are_reread_once_after_write(self):
         # 回帰防止用（変更前後とも通る）: 新規実行で書いたattemptログを、書き込み後にディスクから
         # ちょうど1回（0回ではない）読み直してsha256を取る不変条件を固定する。
-        test_manifest = {
-            "image": {"tag": "example:1"},
-            "defaults": {"timeoutSeconds": 10, "retries": 0},
-            "mounts": [],
-        }
+        test_manifest = job_manifest()
         case = {
             "id": "fresh-case", "group": "target", "description": "description",
             "relation": "support", "criterionIds": ["criterion"], "command": ["true"],
@@ -186,22 +185,10 @@ class ResumeAttemptLogReadOnceTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             run_root = Path(directory)
             attempt_root = run_root / "jobs" / "fresh-case-r1" / "attempts" / "1"
-            targets = {
+            open_patch, opened = recording_open({
                 (attempt_root / name).resolve(): name for name in ("stdout.log", "stderr.log")
-            }
-            opened = {name: [] for name in targets.values()}
-            original_open = pathlib.Path.open
-
-            def counting_open(self, *args, **kwargs):
-                mode = args[0] if args else kwargs.get("mode", "r")
-                name = targets.get(Path(self).resolve())
-                if name is not None:
-                    opened[name].append(mode)
-                return original_open(self, *args, **kwargs)
-
-            with mock.patch.object(RUNNER, "run_capture", side_effect=completed_capture), mock.patch.object(
-                pathlib.Path, "open", counting_open
-            ):
+            })
+            with mock.patch.object(RUNNER, "run_capture", side_effect=completed_capture), open_patch:
                 result = RUNNER.execute_job(test_manifest, case, 1, "run", run_root, run_root, False)
             attempt = result["attempts"][0]
             self.assertEqual("oracle-pass", result["status"])
@@ -218,11 +205,7 @@ class ResumeAttemptLogReadOnceTests(unittest.TestCase):
                 self.assertEqual(["rb"], modes)
 
     def test_timeout_crlf_log_oracle_matches_on_resume(self):
-        test_manifest = {
-            "image": {"tag": "example:1"},
-            "defaults": {"timeoutSeconds": 10, "retries": 0},
-            "mounts": [],
-        }
+        test_manifest = job_manifest()
         case = {
             "id": "crlf-case", "group": "target", "description": "description",
             "relation": "support", "criterionIds": ["criterion"], "command": ["true"],
