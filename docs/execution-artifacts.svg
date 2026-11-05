@@ -1,0 +1,46 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1068 236" width="1068" height="236" role="img" aria-labelledby="t d" font-family="'Hiragino Sans','Noto Sans JP',sans-serif">
+<title id="t">実行と成果物</title>
+<desc id="d">manifest.json を run-matrix.py が検証してジョブを起動し、Apple Container がジョブごとに隔離して実行する。各ジョブの判定とログは result.json に記録され、summary.json と世代別 report.&lt;gen&gt;.md に集約される。この2つが SHA-256 で結ばれた権威ある結果で、利用者向けレポートはそのパスと SHA-256 を引用する。</desc>
+<defs>
+<marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#292524"/></marker>
+</defs>
+<rect width="1068" height="236" fill="#FFFFFF"/>
+<text x="16" y="34" font-size="20" font-weight="700" fill="#1C1917">実行と成果物</text>
+<text x="16" y="60" font-size="14" fill="#57534E">信頼する結果は summary.json と世代別 report の組（太枠）</text>
+
+<g id="a1"><rect x="16" y="88" width="156" height="104" rx="8" fill="#FFFFFF" stroke="#A8A29E" stroke-width="1.4"/>
+<text x="30" y="118" font-size="14" font-weight="700" fill="#1C1917" font-family="ui-monospace,Menlo,monospace">manifest.json</text>
+<text x="30" y="146" font-size="13" fill="#44403C">ケース行列</text></g>
+<line x1="172" y1="140" x2="190" y2="140" stroke="#292524" stroke-width="2" marker-end="url(#ar)"/>
+
+<g id="a2"><rect x="192" y="88" width="156" height="104" rx="8" fill="#FFFFFF" stroke="#292524" stroke-width="2"/>
+<text x="206" y="118" font-size="14" font-weight="700" fill="#1C1917" font-family="ui-monospace,Menlo,monospace">run-matrix.py</text>
+<text x="206" y="146" font-size="13" fill="#44403C">検証して</text>
+<text x="206" y="166" font-size="13" fill="#44403C">ジョブを起動</text></g>
+<line x1="348" y1="140" x2="366" y2="140" stroke="#292524" stroke-width="2" marker-end="url(#ar)"/>
+
+<g id="a3"><rect x="368" y="88" width="156" height="104" rx="8" fill="#3730A3"/>
+<text x="382" y="118" font-size="14" font-weight="700" fill="#FFFFFF">Apple Container</text>
+<text x="382" y="146" font-size="13" fill="#E0E7FF">ジョブごとに</text>
+<text x="382" y="166" font-size="13" fill="#E0E7FF">隔離して実行</text></g>
+<line x1="524" y1="140" x2="542" y2="140" stroke="#292524" stroke-width="2" marker-end="url(#ar)"/>
+
+<g id="a4"><rect x="544" y="88" width="156" height="104" rx="8" fill="#FFFFFF" stroke="#A8A29E" stroke-width="1.4"/>
+<text x="558" y="118" font-size="14" font-weight="700" fill="#1C1917" font-family="ui-monospace,Menlo,monospace">result.json</text>
+<text x="558" y="146" font-size="13" fill="#44403C">ジョブごとの</text>
+<text x="558" y="166" font-size="13" fill="#44403C">判定とログ</text></g>
+<line x1="700" y1="140" x2="718" y2="140" stroke="#292524" stroke-width="2" marker-end="url(#ar)"/>
+
+<g id="a5"><rect x="720" y="88" width="156" height="104" rx="8" fill="#FFFFFF" stroke="#15803D" stroke-width="3.5"/>
+<text x="734" y="116" font-size="12" font-weight="700" fill="#1C1917" font-family="ui-monospace,Menlo,monospace">summary.json</text>
+<text x="734" y="134" font-size="12" font-weight="700" fill="#1C1917" font-family="ui-monospace,Menlo,monospace">+ report.&lt;gen&gt;.md</text>
+<text x="734" y="160" font-size="13" fill="#44403C">SHA-256 で結ばれた</text>
+<text x="734" y="180" font-size="13" fill="#44403C">権威ある結果</text></g>
+<line x1="876" y1="140" x2="894" y2="140" stroke="#292524" stroke-width="2" marker-end="url(#ar)"/>
+
+<g id="a6"><rect x="896" y="88" width="156" height="104" rx="8" fill="#FFFFFF" stroke="#A8A29E" stroke-width="1.4"/>
+<text x="910" y="118" font-size="14" font-weight="700" fill="#1C1917">利用者向け</text>
+<text x="910" y="136" font-size="14" font-weight="700" fill="#1C1917">レポート</text>
+<text x="910" y="160" font-size="13" fill="#44403C">左のパスと</text>
+<text x="910" y="180" font-size="13" fill="#44403C">SHA-256 を引用</text></g>
+</svg>

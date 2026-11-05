@@ -1,0 +1,46 @@
+{
+  "purpose": "仮説評価 claimOutcome がジョブ結果からどう決まるかを示す",
+  "audience": "スキルを使うエンジニア。support/falsify/neutral の意味は流れ図で知っている",
+  "message": "上の行から順に照合し、最初に当てはまった行で claimOutcome が決まる",
+  "source_summary": "SKILL.md 手順7「claimOutcome の優先順」",
+  "explanation": {
+    "reader_question": "ジョブの結果は、どの条件でどの claimOutcome になるのか？",
+    "understanding_gap": "全部 pass なら支持、という単純な読み方をし、falsify の優先や PARTIALLY・UNVERIFIED の条件が分からない",
+    "visual_strategy": "条件と結果を4行の対応表にし、行番号で優先順を示す。補足条件は図に入れず SKILL.md に任せる",
+    "output_format": "svg",
+    "source_basis": [
+      {"id": "s1", "text": "SKILL.md 手順7-1: 一意な falsify ジョブの oracle-pass が1件でもあれば FALSIFIED"},
+      {"id": "s2", "text": "SKILL.md 手順7-2: support が1件以上あり全件 oracle-pass、全 falsify が oracle-fail なら SUPPORTED WITHIN TESTED SCOPE"},
+      {"id": "s3", "text": "SKILL.md 手順7-3: 全 falsify が oracle-fail、support は全件判定済みで oracle-pass が一部なら PARTIALLY SUPPORTED WITHIN TESTED SCOPE"},
+      {"id": "s4", "text": "SKILL.md 手順7-4: それ以外（欠損・timeout・基盤エラー、support の pass 0件）は UNVERIFIED"},
+      {"id": "s5", "text": "SKILL.md 手順7: neutral は仮説評価を直接動かさない"}
+    ],
+    "claim_visual_map": [
+      {"claim": "falsify の pass は最優先で FALSIFIED", "source_ids": ["s1"], "element_ids": ["o1"]},
+      {"claim": "全 support pass かつ全 falsify fail で SUPPORTED", "source_ids": ["s2"], "element_ids": ["o2"]},
+      {"claim": "support が一部だけ pass で PARTIALLY SUPPORTED", "source_ids": ["s3"], "element_ids": ["o3"]},
+      {"claim": "それ以外は UNVERIFIED", "source_ids": ["s4", "s5"], "element_ids": ["o4"]}
+    ]
+  },
+  "elements": [
+    {"id": "o1", "label": "FALSIFIED", "type": "state", "priority": "primary"},
+    {"id": "o2", "label": "SUPPORTED WITHIN TESTED SCOPE", "type": "state", "priority": "primary"},
+    {"id": "o3", "label": "PARTIALLY SUPPORTED WITHIN TESTED SCOPE", "type": "state", "priority": "primary"},
+    {"id": "o4", "label": "UNVERIFIED", "type": "state", "priority": "primary"}
+  ],
+  "relationships": [
+    {"from": "o1", "to": "o2", "verb": "当てはまらなければ次の行", "direction": "one-way", "kind": "sequence"},
+    {"from": "o2", "to": "o3", "verb": "当てはまらなければ次の行", "direction": "one-way", "kind": "sequence"},
+    {"from": "o3", "to": "o4", "verb": "当てはまらなければ次の行", "direction": "one-way", "kind": "sequence"}
+  ],
+  "groups": [],
+  "candidate_patterns": ["優先順の対応表", "分岐フローチャート"],
+  "selected_pattern": "優先順の対応表。分岐図より線が少なく、最初に当てはまった行で決まることを行番号で示せる",
+  "style_rules": {
+    "shape_semantics": "白い箱=条件、色付き箱=判定結果",
+    "color_semantics": "結果ごとに色を変えるが、必ず英字ラベルを併記する",
+    "line_semantics": "矢印=条件が成立したときの結果",
+    "font_weight_rules": "行番号と判定名は太字"
+  },
+  "open_questions": ["support の全件判定済み・重複や期待外の結果なしという前提条件は図から省き、SKILL.md 手順7に委ねている"]
+}

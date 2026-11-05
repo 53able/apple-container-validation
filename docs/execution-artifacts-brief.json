@@ -1,0 +1,51 @@
+{
+  "purpose": "実行時に何が動き、どの成果物を信頼すべきかを示す",
+  "audience": "スキルを使う・保守するエンジニア",
+  "message": "run-matrix.py が Apple Container でジョブを隔離実行し、summary.json と世代別 report の組が権威ある結果になる",
+  "source_summary": "SKILL.md 手順6-8、references/results-and-evidence.md の証跡レイアウト",
+  "explanation": {
+    "reader_question": "実行時に何がどの順で動き、どれが信頼すべき結果か？",
+    "understanding_gap": "results 配下に多数のファイルがあり、report.md と世代別 report のどちらを信頼すべきか分からない",
+    "visual_strategy": "6つの成果物・処理を1列に並べ、権威ある結果だけを太枠にする",
+    "output_format": "svg",
+    "source_basis": [
+      {"id": "s1", "text": "SKILL.md 手順4・6: validate-manifest.py で検証し、run-matrix.py で manifest を並列実行する（run-matrix.py は validator を読み込む）"},
+      {"id": "s2", "text": "SKILL.md 冒頭・手順6: 各ケースを Apple Container で隔離して実行する"},
+      {"id": "s3", "text": "results-and-evidence.md: jobs/<case-id>-r<repeat>/ に result.json と attempts/ のログを保存する"},
+      {"id": "s4", "text": "SKILL.md 手順7: 権威は summary.json と SHA-256 で結ばれた世代別 report にあり、report.md は古い可能性がある写し"},
+      {"id": "s5", "text": "SKILL.md 手順8-1: 利用者向けレポートには根拠とした世代別 report のパスと SHA-256 を記載する"}
+    ],
+    "claim_visual_map": [
+      {"claim": "run-matrix.py が manifest を検証してジョブを起動する", "source_ids": ["s1"], "element_ids": ["a1", "a2"]},
+      {"claim": "Apple Container がジョブごとに隔離実行する", "source_ids": ["s2"], "element_ids": ["a3"]},
+      {"claim": "ジョブごとに result.json を書く", "source_ids": ["s3"], "element_ids": ["a4"]},
+      {"claim": "summary.json と世代別 report が権威ある結果", "source_ids": ["s4"], "element_ids": ["a5"]},
+      {"claim": "利用者向けレポートはそのパスと SHA-256 を引用する", "source_ids": ["s5"], "element_ids": ["a6"]}
+    ]
+  },
+  "elements": [
+    {"id": "a1", "label": "manifest.json", "type": "data", "priority": "primary"},
+    {"id": "a2", "label": "run-matrix.py", "type": "process", "priority": "primary"},
+    {"id": "a3", "label": "Apple Container", "type": "process", "priority": "primary"},
+    {"id": "a4", "label": "result.json", "type": "data", "priority": "primary"},
+    {"id": "a5", "label": "summary.json + report.<gen>.md", "type": "artifact", "priority": "primary"},
+    {"id": "a6", "label": "利用者向けレポート", "type": "artifact", "priority": "primary"}
+  ],
+  "relationships": [
+    {"from": "a1", "to": "a2", "verb": "入力", "direction": "one-way", "kind": "flow"},
+    {"from": "a2", "to": "a3", "verb": "起動", "direction": "one-way", "kind": "flow"},
+    {"from": "a3", "to": "a4", "verb": "記録", "direction": "one-way", "kind": "flow"},
+    {"from": "a4", "to": "a5", "verb": "集約", "direction": "one-way", "kind": "flow"},
+    {"from": "a5", "to": "a6", "verb": "引用", "direction": "one-way", "kind": "flow"}
+  ],
+  "groups": [],
+  "candidate_patterns": ["直列・入力→処理→出力", "レイヤー×列"],
+  "selected_pattern": "直列。旧 architecture.svg のレイヤー×列は同梱ファイルまで載せて情報過多だったため、実行時の流れと権威ある結果だけに絞る",
+  "style_rules": {
+    "shape_semantics": "白い箱=ファイル、濃い枠=スクリプト、濃色の箱=実行環境、太い緑枠=権威ある結果",
+    "color_semantics": "緑は権威ある結果だけに使い、副題でも説明する",
+    "line_semantics": "矢印=データの流れ",
+    "font_weight_rules": "ファイル名は太字の等幅、説明は通常"
+  },
+  "open_questions": []
+}

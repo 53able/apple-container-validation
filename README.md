@@ -6,6 +6,18 @@ Apple Container 上に再現可能な技術検証環境を構築し、コンテ�
 
 [vercel-labs/skills](https://github.com/vercel-labs/skills) CLI（`npx skills`）に対応する。
 
+## 仕組み
+
+![仮説と棄却条件を結果より先に固定し、各ケースに support・falsify・neutral を割り当て、Apple Container でジョブごとに隔離して並列実行し、仮説を FALSIFIED・SUPPORTED・UNVERIFIED などに評価して、ログと来歴付きの Markdown レポートにまとめる。](docs/how-it-works.png)
+
+仮説評価は、ジョブの結果を上の行から順に照合して決まる。前提条件を含む規則の全体は `skills/apple-container-validation/SKILL.md` の手順7にある。
+
+![falsify ケースに oracle-pass が1件でもあれば FALSIFIED。support が全件 pass で falsify が全件 fail なら SUPPORTED WITHIN TESTED SCOPE。falsify が全件 fail で support は一部だけ pass なら PARTIALLY SUPPORTED WITHIN TESTED SCOPE。それ以外は timeout や欠損を含めて UNVERIFIED。neutral ケースは判定に入らない。](docs/claim-outcome.png)
+
+実行時は次の順で成果物ができる。信頼する結果は `summary.json` と世代別 report の組である。
+
+![manifest.json を run-matrix.py が検証してジョブを起動し、Apple Container がジョブごとに隔離して実行する。各ジョブの判定とログは result.json に記録され、summary.json と世代別 report に集約される。この2つが SHA-256 で結ばれた権威ある結果で、利用者向けレポートはそのパスと SHA-256 を引用する。](docs/execution-artifacts.png)
+
 ## 由来
 
 [53able/skills](https://github.com/53able/skills) の `skills/apple-container-validation`（コミット `f17a12d` 時点）を、該当パスのコミット履歴を保持したまま切り出したもの。
