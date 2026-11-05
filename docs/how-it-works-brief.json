@@ -1,0 +1,49 @@
+{
+  "purpose": "README の冒頭で、apple-container-validation が技術的主張をどの順序で検証するかを示す",
+  "audience": "スキルを導入するか判断する、または初めて使うエンジニア",
+  "message": "判定基準を結果より先に固定し、隔離した環境で実測して仮説を評価する",
+  "source_summary": "SKILL.md 冒頭と手順1・3・6・7・8",
+  "explanation": {
+    "reader_question": "このスキルはどんな順序で技術的主張を検証するのか？",
+    "understanding_gap": "単にテストを並列実行するだけに見え、判定基準を先に固定することと仮説評価の段階があることが分からない",
+    "visual_strategy": "5段階を左から右へ1列に並べ、各段階に短い説明を1つだけ付ける。判定規則やファイル名は図に含めず、docs/claim-outcome.svg と docs/execution-artifacts.svg に分ける",
+    "output_format": "svg",
+    "source_basis": [
+      {"id": "s1", "text": "SKILL.md 手順1: 仮説と棄却条件を結果を見る前に固定する"},
+      {"id": "s2", "text": "SKILL.md 手順3: ケースごとに relation（support・falsify・neutral）を決めてケース行列を作る"},
+      {"id": "s3", "text": "SKILL.md 冒頭・手順6: 各ケースを Apple Container で隔離して並列実行する"},
+      {"id": "s4", "text": "SKILL.md 手順7: claimOutcome は FALSIFIED・SUPPORTED WITHIN TESTED SCOPE・PARTIALLY SUPPORTED WITHIN TESTED SCOPE・UNVERIFIED"},
+      {"id": "s5", "text": "SKILL.md 冒頭・手順8: ログと来歴を伴う Markdown レポートを1つ残す"}
+    ],
+    "claim_visual_map": [
+      {"claim": "判定基準を結果より先に固定する", "source_ids": ["s1"], "element_ids": ["p1"]},
+      {"claim": "ケースに relation を割り当てる", "source_ids": ["s2"], "element_ids": ["p2"]},
+      {"claim": "ジョブごとに隔離して並列実行する", "source_ids": ["s3"], "element_ids": ["p3"]},
+      {"claim": "仮説を評価する", "source_ids": ["s4"], "element_ids": ["p4"]},
+      {"claim": "レポートにまとめる", "source_ids": ["s5"], "element_ids": ["p5"]}
+    ]
+  },
+  "elements": [
+    {"id": "p1", "label": "1 判定基準を固定", "type": "process", "priority": "primary"},
+    {"id": "p2", "label": "2 ケース行列", "type": "process", "priority": "primary"},
+    {"id": "p3", "label": "3 隔離して並列実行", "type": "process", "priority": "primary"},
+    {"id": "p4", "label": "4 仮説を評価", "type": "process", "priority": "primary"},
+    {"id": "p5", "label": "5 レポート", "type": "artifact", "priority": "primary"}
+  ],
+  "relationships": [
+    {"from": "p1", "to": "p2", "verb": "次へ", "direction": "one-way", "kind": "sequence"},
+    {"from": "p2", "to": "p3", "verb": "次へ", "direction": "one-way", "kind": "sequence"},
+    {"from": "p3", "to": "p4", "verb": "次へ", "direction": "one-way", "kind": "sequence"},
+    {"from": "p4", "to": "p5", "verb": "次へ", "direction": "one-way", "kind": "sequence"}
+  ],
+  "groups": [],
+  "candidate_patterns": ["直列", "直列＋判定表"],
+  "selected_pattern": "直列。判定表まで入れると一図で二つの問いに答えることになり情報過多になるため、流れだけに絞る",
+  "style_rules": {
+    "shape_semantics": "濃色の角丸箱=処理段階、白い枠付き箱=最終成果物",
+    "color_semantics": "色は処理と成果物の区別だけに使う",
+    "line_semantics": "実線矢印=順序",
+    "font_weight_rules": "段階名は太字、説明は通常"
+  },
+  "open_questions": []
+}
