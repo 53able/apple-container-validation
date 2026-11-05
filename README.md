@@ -44,11 +44,17 @@ skills/apple-container-validation/
 ## インストール
 
 ```bash
-# ローカルのクローンから
-npx skills add ./ -g
+npx skills add 53able/apple-container-validation -g
+```
 
-# GitHub に公開後（<owner> は公開先に置き換える）
-npx skills add <owner>/apple-container-validation -g
+`-g` はユーザー単位（全プロジェクト共通）でインストールする。特定のプロジェクトだけで使う場合は、そのプロジェクトのルートで `-g` を付けずに実行する。
+
+スキルを開発・変更する場合は、クローンしたリポジトリのルートから入れる。
+
+```bash
+git clone https://github.com/53able/apple-container-validation.git
+cd apple-container-validation
+npx skills add ./ -g
 ```
 
 ## テスト
