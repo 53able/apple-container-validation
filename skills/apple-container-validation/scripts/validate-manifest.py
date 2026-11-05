@@ -98,7 +98,7 @@ def load_manifest(path: Path) -> dict[str, Any]:
         raise ValueError("manifestを読めない") from exc
     try:
         value = json.loads(text)
-    except (json.JSONDecodeError, ValueError) as exc:
+    except ValueError as exc:
         raise ValueError("manifestが不正なJSON") from exc
     reject_lone_surrogates(value)
     if not isinstance(value, dict):
@@ -540,7 +540,7 @@ def _preliminary_names(argv: list[str]) -> set[str]:
             parsed = json.loads(Path(token).read_text(encoding="utf-8"))
             reject_lone_surrogates(parsed)
             return extract_inherited_env_names(parsed)
-        except (OSError, UnicodeDecodeError, json.JSONDecodeError, ValueError):
+        except (OSError, UnicodeDecodeError, ValueError):
             continue
     return set()
 

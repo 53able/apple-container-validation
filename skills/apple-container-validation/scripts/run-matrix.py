@@ -166,12 +166,6 @@ def atomic_create_bytes(path: Path, value: bytes, *, root: Path) -> None:
     _publish_via_private_temporary(path, value, root, exclusive=True)
 
 
-def atomic_create_text(
-    path: Path, value: str, *, root: Path, inherited_names: set[str] | None = None
-) -> None:
-    atomic_create_bytes(path, safe_text_bytes(value, inherited_names or set()), root=root)
-
-
 def atomic_write_json(
     path: Path, value: dict[str, Any], *, root: Path | None = None,
     inherited_names: set[str] | None = None,
@@ -368,7 +362,7 @@ def load_json_object(path: Path, *, root: Path, label: str) -> dict[str, Any]:
     try:
         value = json.loads(path.read_text(encoding="utf-8"))
         reject_lone_surrogates(value)
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
+    except (OSError, UnicodeDecodeError, ValueError) as exc:
         raise RuntimeError(f"{label} is unreadable or malformed: {path}") from exc
     if not isinstance(value, dict):
         raise RuntimeError(f"{label} must contain a JSON object: {path}")
@@ -487,7 +481,7 @@ def tree_sha256_excluding_results(root: Path, results_root: Path) -> str:
 def resolve_manifest_input(base: Path, value: str, *, directory: bool, label: str) -> Path:
     relative = Path(value)
     if (
-        not isinstance(value, str) or not value.strip() or relative == Path(".")
+        not value.strip() or relative == Path(".")
         or relative.is_absolute() or ".." in relative.parts
         or any(_is_control_char(char) for char in value)
     ):
@@ -712,7 +706,6 @@ def evaluate_run(
     )
     identities_complete = (
         evidence_integrity_clean
-        and len(results) == len(expected_by_id)
         and set(results_by_id) == set(expected_by_id)
     )
     if dry_run:
@@ -771,7 +764,7 @@ def aggregate_run_results(
     counts["other/unadjudicated"] = 0
     for result in results:
         status = result.get("status")
-        if status in counts and status != "other/unadjudicated":
+        if status in counts:
             counts[status] += 1
         else:
             counts["other/unadjudicated"] += 1
@@ -802,7 +795,7 @@ def build_image(
     if dry_run:
         atomic_write_text(
             log_path,
-            redact_inherited_text("DRY RUN: " + shlex.join(args) + "\n", inherited_names),
+            "DRY RUN: " + shlex.join(args) + "\n",
             root=run_root,
             inherited_names=inherited_names,
         )
@@ -810,7 +803,7 @@ def build_image(
     completed = run_capture(args)
     atomic_write_text(
         log_path,
-        redact_inherited_text(completed.stdout + completed.stderr, inherited_names),
+        completed.stdout + completed.stderr,
         root=run_root,
         inherited_names=inherited_names,
     )
@@ -1022,9 +1015,7 @@ def _verify_resume_result(
         final_attempt.get("infrastructureError", False), passed, final_attempt["timedOut"]
     )
     if (
-        final_attempt.get("passed") is not passed
-        or final_attempt.get("failures") != failures
-        or existing.get("stdoutSha256") != final_attempt.get("stdoutSha256")
+        existing.get("stdoutSha256") != final_attempt.get("stdoutSha256")
         or existing.get("stderrSha256") != final_attempt.get("stderrSha256")
         or existing.get("command") != final_attempt.get("command")
         or existing.get("status") != reconstructed_status
@@ -1156,8 +1147,7 @@ def execute_job(
             passed, raw_failures = check_oracle(
                 case, exit_code, timed_out, raw_stdout, raw_stderr, attempt_evidence
             )
-        stdout = redact_inherited_text(raw_stdout, known_inherited)
-        stderr = redact_inherited_text(raw_stderr, known_inherited)
+        stdout, stderr = raw_stdout, raw_stderr
         failures = [redact_inherited_text(item, known_inherited) for item in raw_failures]
         for item in secret_artifact_failures:
             if item not in failures:
@@ -1520,17 +1510,7 @@ def _main(diagnostics: BufferedDiagnostics) -> int:
         for case in manifest["cases"]
         for repeat in range(1, case.get("repeats", manifest["defaults"].get("repeats", 1)) + 1)
     ]
-    expected_jobs = [
-        {
-            "jobId": f"{case['id']}-r{repeat}",
-            "caseId": case["id"],
-            "repeat": repeat,
-            "group": case["group"],
-            "relation": case["relation"],
-            "criterionIds": case["criterionIds"],
-        }
-        for case, repeat in jobs
-    ]
+    expected_jobs = [_job_identity(case, repeat) for case, repeat in jobs]
     if args.concurrency == "auto":
         concurrency = recommended_concurrency(manifest, len(jobs))
     else:

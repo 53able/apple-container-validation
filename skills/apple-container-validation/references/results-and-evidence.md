@@ -5,7 +5,7 @@
 ## 目次
 
 1. 証跡レイアウト（resumeの再利用条件を含む）
-2. 実行状態と仮説評価（version 1からの移行を含む）
+2. 実行状態と仮説評価
 3. Apple Container起動失敗の識別限界
 4. 秘密値のリダクト
 
@@ -33,7 +33,7 @@ results/<run-id>/
 
 `run-manifest.json` はマニフェスト、解決済みイメージ、build context、Containerfile、mount入力、skill bundle、ジョブ集合、並列度、Apple Containerバージョン、ホストのSHA-256または値を固定する。tree hashは通常ファイルと実ディレクトリを型付きでframeし、nested symlink、FIFO、socketなど未対応型を制御された入力エラーとして拒否する。入力tree hashはrun root作成前に完了させる。来歴、ログ、結果、集計、レポートは、同一ディレクトリに排他的に作った予測困難な一時ファイルから0600で置換し、既存の一時symlinkや出力先symlinkのtargetをたどらない。runner所有ディレクトリは0700にする。`--results-dir`はresolve前のlexical pathに既存symlink componentがある場合に拒否する。ジョブ、attempt、evidenceの各ディレクトリは、run root配下の実ディレクトリでsymlinkを含まないことを作成前後に検証し、resume前と最終publish前にrun root、`jobs/`、job root、attempts、各attemptの許可entryを閉じたschemaとして検査する。run rootは文書化した固定ファイル、`jobs/`、`report.md`、妥当なimmutable世代reportだけを許可し、移動した部分jobなどの兄弟entryを拒否する。evidence配下はsymlink・特殊ファイルを拒否して通常ファイルを`artifactSha256`へ再結合する。attempt作成後のsubprocess基盤例外も、リダクト済みlog、artifact hash、attempt recordを保存した`infrastructure-error`として結合する。timeout後のcontainer cleanupには`CONTAINER_CLEANUP_TIMEOUT_SECONDS = 10.0`を適用する。cleanup起動・非0終了・例外・cleanup timeoutは、元のtimeoutではなくgenericなcleanup failureを明示したhash-boundな`infrastructure-error`として同じattemptを完結させる。dry-runまたはattempt前基盤エラーのhash未記録evidenceは空でなければ拒否する。`jobs/`は期待job ID集合とも照合する。これは通常の部分状態や事前配置symlinkを拒否するが、同一ユーザーが検証と利用の間に同時変更するTOCTOU raceに対するdirfd/openatベースの完全な耐性は保証しない。fsyncや電源断耐性も保証しない。
 
-権威ある最終成果物は`summary.json`と、その`reportArtifact.path`が指す予測困難な世代名のreportである。runnerは一度publishした世代別reportを上書きしない。results rootがskill bundle、image context、mount directory配下にある場合、入力来歴をrun追加から安定させるためresults subtreeをresolve前にlexical exclusionし、`treeHashExclusions`へ`skillBundle`、`imageContext`、全`mountSources`の構造で記録する。除外内のsymlink先をhashへ混入させない。results rootがskill rootと同一/祖先、またはhashed input directoryと同一なら意味のあるhashを作れないため拒否する。runnerはreportと最終summaryのserialize済みbytesを秘密値検査してから世代別reportをpublishし、そのpath/hashを含む`summary.json`を最後に原子的に置換する。runnerとvalidatorの診断は全recordと終端改行をイベント順の単一streamへbufferし、完全なstreamへ固定点削除・最終byte検査を適用した後、後述「秘密値のリダクト」のchannel policyに従う1つの物理channelへ一度だけ出力する。summary置換後に失敗し得る整合性検査は行わない。report生成・publish失敗時は旧summaryを残し、summary publish失敗時の世代別reportは非権威の孤児になる。`report.md`は互換用copyであり、その更新失敗はcommit済みpairを無効にしない。動的manifest/result/failure文字列は単一行へ正規化し、ASCII Markdown句読点をnumeric character entityへ変換して、image、link、emphasis、autolink、raw HTML、heading、code、table構造を生成できないinert textにする。証拠一覧は実在するmode別ファイルだけを列挙する。
+権威ある最終成果物は`summary.json`と、その`reportArtifact.path`が指す予測困難な世代名のreportである。runnerは一度publishした世代別reportを上書きしない。results rootがskill bundle、image context、mount directory配下にある場合、入力来歴をrun追加から安定させるためresults subtreeをresolve前にlexical exclusionし、`treeHashExclusions`へ`skillBundle`、`imageContext`、全`mountSources`の構造で記録する。除外内のsymlink先をhashへ混入させない。results rootがskill rootと同一/祖先、またはhashed input directoryと同一なら意味のあるhashを作れないため拒否する。runnerはreportと最終summaryのserialize済みbytesを秘密値検査してから世代別reportをpublishし、そのpath/hashを含む`summary.json`を最後に原子的に置換する。summary置換後に失敗し得る整合性検査は行わない。report生成・publish失敗時は旧summaryを残し、summary publish失敗時の世代別reportは非権威の孤児になる。`report.md`は互換用copyであり、その更新失敗はcommit済みpairを無効にしない。動的manifest/result/failure文字列は単一行へ正規化し、ASCII Markdown句読点をnumeric character entityへ変換して、image、link、emphasis、autolink、raw HTML、heading、code、table構造を生成できないinert textにする。証拠一覧は実在するmode別ファイルだけを列挙する。
 
 `--resume` は固定した来歴とattempt別ログ・artifact hashが一致し、`result.json`まで原子的に保存された完成済みジョブだけを再利用する。全既存完成jobを新規job実行前に検証し、hashが一致していてもattempt/final logがUTF-8としてdecodeできない場合を含め、1件でも整合性を拒否した場合は既存job treeをbyte単位で変更せず、新しい権威あるsummary/reportもpublishしない。`result.json`がない部分attemptは保存したまま拒否する。部分job状態は`results/<run-id>/`ツリー全体の外へ移すか、新しいrun-idを使う。run rootや`jobs/`内の別位置へ移してはならない。ランナーは部分証跡を自動削除・上書き・隔離しない。`inheritEnv`を使うrunは値を保存・比較しないためresumeできない。
 
@@ -59,10 +59,6 @@ results/<run-id>/
 `counts`は`oracle-pass`、`oracle-fail`、`timeout`、`infrastructure-error`、`dry-run`、`other/unadjudicated`を常に出力し、該当がない状態も0で残す。
 
 `summary.json`は`authenticationVerification`、`launcherOriginVerification`、`claimEvaluationQualification`も出力する。CLI intentがなければ認証は`NOT APPLICABLE`、あれば実際の非secret preflight証拠をrunnerが記録していないため`NOT VERIFIED BY RUNNER`である。dry runまたはclaim-bearing caseがなければlauncher由来は`NOT APPLICABLE`、実行したclaim-bearing runでは既定で`NOT VERIFIED BY RUNNER`とし、このときclaim評価は`PROVISIONAL`になる。system logを確認したとは自動記録しない。CIは`claimOutcome`単独を主張真偽のgateにしてはならない。run完了には`executionStatus`を使い、主張を受理するには外部または別途記録したlauncher-origin attestationを必須にする。
-
-### version 1からの移行
-
-version 1が出力した`INCOMPLETE OR ORACLE MISMATCH`はversion 2で廃止した。version 2のランナー終了コード0は、全期待ジョブの判定完了またはdry runを意味し、主張の支持を意味しない。支持判定へ移行するときは、全`support`の成立だけでなく、全`falsify`が欠損なく判定済みであることと、重複・期待外・匿名結果がないことも確認する。`falsify`のtimeoutや欠損を「反証なし」と読み替えてはならない。利用側は`counts.oracle-fail`も読み、実行未完了と期待観察の不一致を分ける。さらに、固定`report.md`との暗黙のpairを前提にせず、`summary.json.reportArtifact`の世代別path/hashを検証する。CIは`claimOutcome`単独ではなく、`executionStatus`と外部launcher-origin attestationを分けて扱う。
 
 ## Apple Container起動失敗の識別限界
 

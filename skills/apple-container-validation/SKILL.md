@@ -64,15 +64,15 @@ compatibility: Requires an Apple silicon Mac running macOS 26 or later, Apple Co
 python3 <skill-dir>/scripts/validate-manifest.py path/to/manifest.json
 ```
 
-終了コード0になるまで修正して再実行する。検証を迂回しない。出力されたジョブ数、ケース群、反復数、推奨並列数を確認し、オラクルのないケース・重複ID・同一コマンドの無意味な複製を残さない。エラーはtext modeではstderr、`--json`ではstdoutの`errors`に出る。
+終了コード0になるまで修正して再実行する。検証を迂回しない。出力されたジョブ数、ケース群、反復数、推奨並列数を確認する。警告のうち同一コマンドの複製は、手順3-7の設計で解消する。エラーはtext modeではstderr、`--json`ではstdoutの`errors`に出る。
 
 ### 5. スモーク検証をする
 
-壊れたハーネスを大量並列すると、大量の無意味な失敗と後片付けだけが残る。本実行の前に小さく通す。
+壊れたハーネスを大量並列すると、大量の無意味な失敗と後片付けだけが残る。本実行の前に小さく通す。始める前にスキル同梱の`references/runner-operations.md`を一度読む（`--results-dir`の既定はcwd、`--help`は使えない）。
 
 1. 代表ケース、負例、失敗系を各1件以上選んだ一時マニフェストを作る。抜き出したfalsifyケースが参照しない棄却条件は`falsificationCriteria`からも外す（外さないとvalidatorが未接続としてエラーにする）。ジョブ数やケース群が少ない警告はスモークでは無視してよい。スモークは`--results-dir results-smoke`など本実行と別の場所に出す。スモーク後にハーネスを直した場合は、入力hashが変わったことをレポートに書く。
 2. ハーネスを`container run`で直接試すより、最初からrunnerの`--dry-run`で生成コマンドとマウントを確認し、続けてrunnerで実行する。runnerが付けるフラグ込みで試さないと、本実行で挙動が変わる。
-3. 実行し、入力、出力、タイムアウト、終了コード、オラクル判定、コンテナ削除を確認する。ハーネス不良はここで直す。
+3. 実行し、入力、出力、タイムアウト、終了コード、オラクル判定を確認する。ハーネス不良はここで直す。
 
 ### 6. 行列を並列実行する
 
@@ -82,14 +82,13 @@ python3 <skill-dir>/scripts/run-matrix.py path/to/manifest.json \
   --concurrency auto
 ```
 
-smokeの前に一度スキル同梱の`references/runner-operations.md`を読む。runnerの引数（`--results-dir`の既定は**cwd**の`results`、`--help`は使えない）、自動で付くフラグ（`--rm --init`、`--read-only --tmpfs /tmp`）、コンテナ名の見分け方、起動時間込みの`timeoutSeconds`の決め方が書いてある。プロセス木、シグナル、ファイルシステム書き込みを扱う検証では、`--init`と`--read-only`を仮説の前提としてレポートに書く。
-
 - 並列度は「可能な限り大きく」ではなく「証拠の独立性を壊さない範囲で最大」にする。`auto`はジョブ数、`maxConcurrency`、論理CPU数÷ケースの最大`cpus`だけを見るので、メモリ、APIレート制限、外部サービス制約が厳しい場合は`maxConcurrency`を下げる。
 - 同じ外部API、固定ポート、書き込み先、レート制限を共有するケースには同じ`exclusiveGroup`を付け、その群だけ直列化する。
 - 秘密値はイメージへ焼き込まず、`inheritEnv`で変数名だけ渡す。ランナーは保存物から完全一致値を除去するが、エンコード・分割された値は検出できない（詳細と限界はスキル同梱の`references/results-and-evidence.md`）。
 - 中断後の再開:
   - `inheritEnv`を1件でも使うrunは`--resume`できない。値を来歴に残さないので同一性を証明できないためである。新しいrun-idで再実行する。
-  - それ以外は、マニフェストとイメージが同一であることを確認して`--resume`を使う。`result.json`が無い部分jobがあると拒否されるので、その部分状態を`results/<run-id>/`の外へ移すか、新しいrun-idを使う。部分状態は削除・上書きしない。
+  - それ以外は、マニフェストとイメージが同一であることを確認して`--resume`を使う。拒否された場合の扱いはスキル同梱の`references/results-and-evidence.md`の「証跡レイアウト」にある。部分状態は削除・上書きしない。
+- 残ったコンテナは名前を指定して削除する。`container delete --all`は使わない。
 - 失敗ケースを削除しない。タイムアウトの再試行はattemptごとに証跡が分かれ、初回失敗も残る。オラクル不成立を都合よく再試行しない。ディスク・メモリ不足やレート制限で崩れたら並列度を下げて新しいrun-idで再実行し、失敗runは残す。
 
 ### 7. 結果を判定する
@@ -104,7 +103,6 @@ smokeの前に一度スキル同梱の`references/runner-operations.md`を読む
   - `neutral`は仮説評価を直接動かさない。その欠損・未判定は支持を消さないが、重複は証拠整合性の異常として支持を止める。
 - **自動判定は暫定である。** `launcherOriginVerification`が`NOT VERIFIED BY RUNNER`のとき`claimOutcome`は暫定で、CIはこれ単独で主張の真偽をgateしない。claim-bearing caseについて、payload markerがstdoutにあること、stderrに起動・設定エラーがないこと、実行直後のApple Container system logに該当時間帯の起動失敗がないことを確認し、確認した範囲をレポートに書く。確認手順とノイズの見分け方はスキル同梱の`references/runner-operations.md`の「起動失敗の手作業確認」にある。
 - 秘密値の漏えいは、`stdoutNotContains`/`stderrNotContains`の否定条件で検出できる（判定はリダクト前の生出力に対して行われる）。
-- resultsを入力tree配下に置いた場合は、`run-manifest.json`の`treeHashExclusions`に除外が記録されていることを確認する。
 - イメージのdigestは`results/<run-id>/image-inspect.json`から取る（`run-manifest.json`の`image`はタグだけ）。
 - 読むもの: `results/<run-id>/summary.json`、その`reportArtifact.path`が指す世代別report、各ジョブの`result.json`と`attempts/<n>/`のログ・evidence。`report.md`は更新失敗時に古い可能性がある写しなので、権威は`summary.json`とSHA-256で結ばれた世代別reportにある。
 - 少なくとも合格1件、不合格または棄却1件、境界1件を、入力・コマンド・stdout/stderr・生成物・`result.json`の判定まで手作業で照合する。予想より整いすぎた結果ほど、入力ハッシュと負例を疑って再確認する。
@@ -113,16 +111,12 @@ smokeの前に一度スキル同梱の`references/runner-operations.md`を読む
 
 ### 8. Markdownレポートを仕上げる
 
-1. `summary.json.reportArtifact.path`がrun root直下の世代別reportを指し、そのSHA-256が`summary.json.reportArtifact.sha256`と一致することを確認する。
-2. 利用者向けレポートはスキル同梱の`<skill-dir>/assets/report-template.md`から新しく書き、利用者が指定した場所（未指定なら`outputs/apple-container-validation-<slug>.md`）へ置く。runnerのreportはMarkdown記号を文字参照に置き換えた機械安全な証拠であり、人が読む文書の土台には向かない。利用者向けレポートには、根拠とした世代別reportのパスとSHA-256を記載する。run root内のreportは編集しない。
-3. 次を必ず含める: 検証対象と結論、仮説と棄却条件、環境と来歴、ケース行列とオラクル、観察結果、観察から導く推論、反証・限界・未検証事項、再実行コマンドと実行時のcwd、生ログと集計への相対パス。
-4. 実測していない値を書かない。`READY`はpreflightを通過してランナーがレポートを出したことだけを示し、`INCOMPLETE`と両立する。テンプレートに無いenum値を作らない。
-5. 最後にファイルを再読し、参照した成果物が存在すること、仮値やTODOが残っていないことを確認する。
+1. 利用者向けレポートはスキル同梱の`<skill-dir>/assets/report-template.md`から新しく書き、利用者が指定した場所（未指定なら`outputs/apple-container-validation-<slug>.md`）へ置く。runnerのreportはMarkdown記号を文字参照に置き換えた機械安全な証拠であり、人が読む文書の土台には向かない。利用者向けレポートには、根拠とした世代別reportのパスとSHA-256を記載する。run root内のreportは編集しない。
+2. テンプレートの全節を埋める。
+3. 実測していない値を書かない。`READY`はpreflightを通過してランナーがレポートを出したことだけを示し、`INCOMPLETE`と両立する。テンプレートに無いenum値を作らない。
+4. 最後にファイルを再読し、参照した成果物が存在すること、仮値やTODOが残っていないことを確認する。
 
 ## 止めるべき状況
 
 - Claude CodeまたはCodexでAPIキー認証が検出された: subscription検証として扱えないので実行を止める。
 - Codexの書き込み可能`auth.json`方式: 認証キャッシュを並列ケースで共有せず、`--resume`も使わない。
-- イメージビルド失敗: ビルドログを保存し、ケース実行へ進まない。
-- マニフェストのハッシュが前回と異なる: `--resume`せず新しいrun-idを使う。
-- ケースのタイムアウト: ランナーが対象コンテナだけを削除して他ケースを続ける。`container delete --all`は使わない。
