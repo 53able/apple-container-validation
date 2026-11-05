@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import posixpath
@@ -91,10 +92,17 @@ def reject_lone_surrogates(value: Any) -> None:
             reject_lone_surrogates(item)
 
 
-def load_manifest(path: Path) -> dict[str, Any]:
+def _read_manifest_bytes(path: Path) -> bytes:
     try:
-        text = path.read_text(encoding="utf-8")
-    except (OSError, UnicodeDecodeError) as exc:
+        return path.read_bytes()
+    except OSError as exc:
+        raise ValueError("manifestを読めない") from exc
+
+
+def load_manifest_bytes(raw: bytes) -> dict[str, Any]:
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError as exc:
         raise ValueError("manifestを読めない") from exc
     try:
         value = json.loads(text)
@@ -104,6 +112,10 @@ def load_manifest(path: Path) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise ValueError("manifestのルートはobjectである必要がある")
     return value
+
+
+def load_manifest(path: Path) -> dict[str, Any]:
+    return load_manifest_bytes(_read_manifest_bytes(path))
 
 
 def extract_inherited_env_names(value: Any) -> set[str]:
@@ -138,7 +150,17 @@ def _has_symlink_component(base: Path, relative: Path) -> bool:
 
 
 def validate_manifest(path: Path) -> tuple[dict[str, Any], list[str], list[str]]:
-    manifest = load_manifest(path)
+    return _validate_loaded(load_manifest(path), path)
+
+
+def load_validated_manifest(path: Path) -> tuple[dict[str, Any], list[str], list[str], str]:
+    """検証とハッシュを同じ1回の読み込みのバイト列から計算する。"""
+    raw = _read_manifest_bytes(path)
+    manifest, errors, warnings = _validate_loaded(load_manifest_bytes(raw), path)
+    return manifest, errors, warnings, hashlib.sha256(raw).hexdigest()
+
+
+def _validate_loaded(manifest: dict[str, Any], path: Path) -> tuple[dict[str, Any], list[str], list[str]]:
     errors: list[str] = []
     warnings: list[str] = []
 

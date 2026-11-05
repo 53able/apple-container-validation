@@ -29,6 +29,7 @@ _VALIDATOR = importlib.util.module_from_spec(_VALIDATOR_SPEC)
 _VALIDATOR_SPEC.loader.exec_module(_VALIDATOR)
 recommended_concurrency = _VALIDATOR.recommended_concurrency
 validate_manifest = _VALIDATOR.validate_manifest
+load_validated_manifest = _VALIDATOR.load_validated_manifest
 extract_inherited_env_names = _VALIDATOR.extract_inherited_env_names
 reject_lone_surrogates = _VALIDATOR.reject_lone_surrogates
 CliArgumentError = _VALIDATOR.CliArgumentError
@@ -1462,7 +1463,7 @@ def _main(diagnostics: BufferedDiagnostics) -> int:
         return 2
 
     try:
-        manifest, errors, warnings = validate_manifest(manifest_path)
+        manifest, errors, warnings, manifest_hash = load_validated_manifest(manifest_path)
     except ValueError as exc:
         safe_print("ERROR: " + str(exc), file=sys.stderr)
         return 2
@@ -1569,7 +1570,6 @@ def _main(diagnostics: BufferedDiagnostics) -> int:
     container_version = redact_inherited_text(version_probe.stdout.strip(), inherited_names)
     skill_root = Path(__file__).resolve().parent.parent
     try:
-        manifest_hash = sha256_file(manifest_path)
         mount_inputs = {
             mount["source"]: resolve_mount_input(base, mount["source"], f"mount source {index}")
             for index, mount in enumerate(manifest.get("mounts", []))
