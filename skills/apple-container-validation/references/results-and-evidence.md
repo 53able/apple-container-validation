@@ -39,7 +39,7 @@ results/<run-id>/
 
 ## 実行状態と仮説評価
 
-`summary.json` version 2では、実行状態をオラクル成立数から分離する。これは出力スキーマの版であり、入力マニフェストの`version: 1`とは別に管理する。
+`summary.json` version 3では、実行状態をオラクル成立数から分離する。これは出力スキーマの版であり、入力マニフェストの`version: 1`とは別に管理する。
 
 | `executionStatus` | 意味 | ランナー終了コード |
 |---|---|---:|
@@ -51,10 +51,10 @@ results/<run-id>/
 
 1. 全期待ジョブが1件ずつ`dry-run`なら`DRY RUN`かつ`UNVERIFIED`。dry run中でも欠損、重複、期待外、基盤エラー、未知状態があれば`INCOMPLETE`かつ`UNVERIFIED`。
 2. 欠損や未判定が別ジョブにあっても、期待IDへ一意に対応する`falsify`の`oracle-pass`が1件あれば`FALSIFIED`。重複した`falsify`結果は反証証拠に数えない。
-3. `support`が1件以上あり、期待した全`support`ジョブが1件ずつ存在して`oracle-pass`、期待した全`falsify`ジョブが1件ずつ存在して判定済みの`oracle-fail`、かつ重複・期待外・匿名結果がなければ`SUPPORTED WITHIN TESTED SCOPE`。証拠整合性に異常がない限り、`neutral`だけの欠損や未判定はこの支持証拠を消さない。
-4. `support`または`falsify`の欠損、重複、未判定、timeout、基盤エラー、`support`の`oracle-fail`、期待外・匿名結果、重複した`neutral`結果、または支持証拠なしなら`UNVERIFIED`。
+3. `support`が1件以上あり、期待した全`falsify`ジョブが1件ずつ存在して判定済みの`oracle-fail`、期待した全`support`ジョブが1件ずつ存在して`oracle-pass`か`oracle-fail`まで判定済み、かつ`support`/`falsify`の重複、期待外・匿名結果がなければ、`support`の`oracle-pass`が全件なら`SUPPORTED WITHIN TESTED SCOPE`、1件以上かつ全件ではない（`oracle-fail`が1件以上ある）なら`PARTIALLY SUPPORTED WITHIN TESTED SCOPE`。`neutral`の欠損・未判定・重複はこの判定を止めない。
+4. `support`または`falsify`の欠損、重複、未判定、timeout、基盤エラー、期待外・匿名結果、`support`の`oracle-pass`が0件、または支持証拠なしなら`UNVERIFIED`。`support`に欠損・未判定が1件でもあれば、他の`support`が`oracle-pass`でも`PARTIALLY SUPPORTED WITHIN TESTED SCOPE`にはならない。
 
-反復も個別ジョブとして同じ規則を適用する。したがって、`support`反復の`oracle-fail`が1件でもあれば支持判定にはならず、一意な`falsify`反復の`oracle-pass`が1件でもあれば反証となる。`neutral`は仮説評価を直接動かさないが、その重複は証拠整合性の異常として支持を止める。重複、未知、期待外、匿名の結果は実行を`INCOMPLETE`にする。
+反復も個別ジョブとして同じ規則を適用する。したがって、`support`反復の一部だけが`oracle-fail`なら`PARTIALLY SUPPORTED WITHIN TESTED SCOPE`であり、一意な`falsify`反復の`oracle-pass`が1件でもあれば反証となる。`neutral`は仮説評価を直接動かさないが、期待外・匿名の結果は期待IDとの対応そのものを崩すため支持を止めるが、`neutral`の重複は期待IDとの対応が取れており仮説評価に入らないため支持を止めない（実行は`INCOMPLETE`、終了コード1で知らせる）。`support`/`falsify`の重複は引き続き支持を止める。重複、未知、期待外、匿名の結果は実行を`INCOMPLETE`にする。
 
 `counts`は`oracle-pass`、`oracle-fail`、`timeout`、`infrastructure-error`、`dry-run`、`other/unadjudicated`を常に出力し、該当がない状態も0で残す。
 
