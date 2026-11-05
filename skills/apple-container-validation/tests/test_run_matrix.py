@@ -7,6 +7,7 @@ import json
 import contextlib
 import io
 import os
+import re
 import sys
 import tempfile
 import unittest
@@ -520,6 +521,26 @@ class ContainerNameTests(unittest.TestCase):
             self.assertTrue(name_b.startswith(prefix), name_b)
             self.assertNotEqual(name_a, name_b)
             self.assertLessEqual(len(name_a), 63)
+
+    def test_short_ids_name_starts_with_normalized_run_id_and_job_id(self) -> None:
+        run_root = Path("/tmp/root-a")
+        for attempt in (None, 1):
+            name = _RUNNER._container_name(run_root, "R1.x", "case-r1", attempt)
+            self.assertTrue(name.startswith("acv-r1-x-case-r1-"), name)
+
+    def test_long_run_id_name_is_truncated_with_hash_suffix(self) -> None:
+        run_id = "R" + "x" * 79
+        self.assertEqual(80, len(run_id))
+        run_root = Path("/tmp/root-a")
+        for attempt in (None, 2):
+            attempt_part = "" if attempt is None else f"-a{attempt}"
+            raw = f"acv-{run_id}-job-1{attempt_part}-{run_root}"
+            normalized = re.sub(r"[^a-z0-9-]", "-", raw.lower()).strip("-")
+            expected_prefix = normalized[:50].rstrip("-")
+            name = _RUNNER._container_name(run_root, run_id, "job-1", attempt)
+            self.assertLessEqual(len(name), 63, name)
+            self.assertRegex(name, r"-[0-9a-f]{12}$")
+            self.assertEqual(expected_prefix, name[:-13], name)
 
 
 class ValidatorWarningTests(unittest.TestCase):
