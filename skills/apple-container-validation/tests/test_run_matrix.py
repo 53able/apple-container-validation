@@ -300,7 +300,7 @@ class ResumeResultTests(unittest.TestCase):
             (attempt_root / "stdout.log").write_text(stdout, encoding="utf-8")
             (attempt_root / "stderr.log").write_text(stderr, encoding="utf-8")
             attempt_name = _RUNNER.safe_name(
-                f"acv-{run_root}-{run_id}-resume-case-r1-a{attempt_number}"
+                f"acv-{run_id}-resume-case-r1-a{attempt_number}-{run_root}"
             )
             args, inherited = _RUNNER.build_container_args(
                 self.manifest(), self.case(), attempt_name, evidence, run_root
@@ -506,6 +506,20 @@ class ResumeResultTests(unittest.TestCase):
             replace.assert_called_once()
             self.assertTrue(result_path.is_file())
             self.assertEqual([], list(result_path.parent.glob(".result.json.*.tmp")))
+
+
+class ContainerNameTests(unittest.TestCase):
+    def test_container_names_start_with_run_id_and_job_id(self) -> None:
+        run_id = "Run_1.x"
+        prefix = "acv-run-1-x-job-1-"
+        root_a, root_b = Path("/tmp/root-a"), Path("/tmp/root-b")
+        for attempt in (None, 1):
+            name_a = _RUNNER._container_name(root_a, run_id, "job-1", attempt)
+            name_b = _RUNNER._container_name(root_b, run_id, "job-1", attempt)
+            self.assertTrue(name_a.startswith(prefix), name_a)
+            self.assertTrue(name_b.startswith(prefix), name_b)
+            self.assertNotEqual(name_a, name_b)
+            self.assertLessEqual(len(name_a), 63)
 
 
 class ValidatorWarningTests(unittest.TestCase):

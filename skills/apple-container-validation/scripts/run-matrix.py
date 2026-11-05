@@ -917,8 +917,9 @@ def _is_valid_duration(value: Any) -> bool:
     return isinstance(value, (int, float)) and not isinstance(value, bool) and not value < 0
 
 
-def _attempt_container_name(run_root: Path, run_id: str, job_id: str, attempt: int) -> str:
-    return safe_name(f"acv-{run_root}-{run_id}-{job_id}-a{attempt}")
+def _container_name(run_root: Path, run_id: str, job_id: str, attempt: int | None = None) -> str:
+    suffix = "" if attempt is None else f"-a{attempt}"
+    return safe_name(f"acv-{run_id}-{job_id}{suffix}-{run_root}")
 
 
 def _verify_resume_result(
@@ -979,7 +980,7 @@ def _verify_resume_result(
         attempt_evidence = require_real_directory(
             attempt_root, attempt_root / "evidence", "resume attempt evidence root"
         )
-        expected_name = _attempt_container_name(run_root, run_id, job_id, expected_attempt)
+        expected_name = _container_name(run_root, run_id, job_id, expected_attempt)
         if attempt_record.get("containerName") != expected_name:
             raise RuntimeError(f"resume attempt container identity mismatch: {attempt_root}")
         command = attempt_record.get("command")
@@ -1124,7 +1125,7 @@ def execute_job(
                 result_path, rebound, root=job_root, inherited_names=known_inherited
             )
         return rebound
-    name = safe_name(f"acv-{run_root}-{run_id}-{job_id}")
+    name = _container_name(run_root, run_id, job_id)
     args, inherited = build_container_args(manifest, case, name, evidence, base)
     if dry_run:
         result = {
@@ -1157,7 +1158,7 @@ def execute_job(
         attempt_evidence = create_or_validate_directory(
             attempt_root, attempt_root / "evidence", "attempt evidence directory"
         )
-        attempt_name = _attempt_container_name(run_root, run_id, job_id, attempt)
+        attempt_name = _container_name(run_root, run_id, job_id, attempt)
         attempt_args, inherited = build_container_args(manifest, case, attempt_name, attempt_evidence, base)
         started = time.monotonic()
         exit_code, raw_stdout, raw_stderr, timed_out, infrastructure_failed = _invoke_container(
