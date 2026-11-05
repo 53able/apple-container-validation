@@ -164,6 +164,59 @@ class ResumeAttemptLogReadOnceTests(unittest.TestCase):
             with self.subTest(log=name):
                 self.assertEqual(["rb"], modes)
 
+    def test_fresh_attempt_logs_are_reread_once_after_write(self):
+        # 回帰防止用（変更前後とも通る）: 新規実行で書いたattemptログを、書き込み後にディスクから
+        # ちょうど1回（0回ではない）読み直してsha256を取る不変条件を固定する。
+        test_manifest = {
+            "image": {"tag": "example:1"},
+            "defaults": {"timeoutSeconds": 10, "retries": 0},
+            "mounts": [],
+        }
+        case = {
+            "id": "fresh-case", "group": "target", "description": "description",
+            "relation": "support", "criterionIds": ["criterion"], "command": ["true"],
+            "oracle": {"exitCode": 0, "stdoutContains": ["ok"]},
+        }
+
+        def completed_capture(args, **kwargs):
+            if args[:2] == ["container", "run"]:
+                return mock.Mock(returncode=0, stdout="ok\n", stderr="note\n")
+            raise AssertionError(args)
+
+        with tempfile.TemporaryDirectory() as directory:
+            run_root = Path(directory)
+            attempt_root = run_root / "jobs" / "fresh-case-r1" / "attempts" / "1"
+            targets = {
+                (attempt_root / name).resolve(): name for name in ("stdout.log", "stderr.log")
+            }
+            opened = {name: [] for name in targets.values()}
+            original_open = pathlib.Path.open
+
+            def counting_open(self, *args, **kwargs):
+                mode = args[0] if args else kwargs.get("mode", "r")
+                name = targets.get(Path(self).resolve())
+                if name is not None:
+                    opened[name].append(mode)
+                return original_open(self, *args, **kwargs)
+
+            with mock.patch.object(RUNNER, "run_capture", side_effect=completed_capture), mock.patch.object(
+                pathlib.Path, "open", counting_open
+            ):
+                result = RUNNER.execute_job(test_manifest, case, 1, "run", run_root, run_root, False)
+            attempt = result["attempts"][0]
+            self.assertEqual("oracle-pass", result["status"])
+            self.assertEqual(
+                hashlib.sha256((attempt_root / "stdout.log").read_bytes()).hexdigest(),
+                attempt["stdoutSha256"],
+            )
+            self.assertEqual(
+                hashlib.sha256((attempt_root / "stderr.log").read_bytes()).hexdigest(),
+                attempt["stderrSha256"],
+            )
+        for name, modes in opened.items():
+            with self.subTest(log=name):
+                self.assertEqual(["rb"], modes)
+
     def test_timeout_crlf_log_oracle_matches_on_resume(self):
         test_manifest = {
             "image": {"tag": "example:1"},
