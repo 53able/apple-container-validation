@@ -68,7 +68,7 @@ python3 <skill-dir>/scripts/validate-manifest.py path/to/manifest.json
 
 ### 5. スモーク検証をする
 
-壊れたハーネスを大量並列すると、大量の無意味な失敗と後片付けだけが残る。本実行の前に小さく通す。始める前にスキル同梱の`references/runner-operations.md`を一度読む（`--results-dir`の既定はcwd、`--help`は使えない）。
+壊れたハーネスを大量並列すると、大量の無意味な失敗と後片付けだけが残る。本実行の前に小さく通す。始める前にスキル同梱の`references/runner-operations.md`を一度読む（`--results-dir`の既定はcwd。引数は`--help`で確認できる）。
 
 1. 代表ケース、負例、失敗系を各1件以上選んだ一時マニフェストを作る。抜き出したfalsifyケースが参照しない棄却条件は`falsificationCriteria`からも外す（外さないとvalidatorが未接続としてエラーにする）。ジョブ数やケース群が少ない警告はスモークでは無視してよい。スモークは`--results-dir results-smoke`など本実行と別の場所に出す。スモーク後にハーネスを直した場合は、入力hashが変わったことをレポートに書く。
 2. ハーネスを`container run`で直接試すより、最初からrunnerの`--dry-run`で生成コマンドとマウントを確認し、続けてrunnerで実行する。runnerが付けるフラグ込みで試さないと、本実行で挙動が変わる。
